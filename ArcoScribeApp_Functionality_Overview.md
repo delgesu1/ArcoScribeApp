@@ -47,6 +47,6 @@ A core feature is the robust background processing pipeline:
 *   **Background Networking (iOS)**: `NSURLSession` (background configuration)
 *   **Local Data Storage**: Async Storage (or similar for recording metadata/status), device file system (for audio files).
 *   **Task Persistence (iOS)**: `NSUserDefaults`
-*   **Transcription API**: ElevenLabs
+*   **Transcription API**: ElevenLabs Scribe Speech-to-text
 *   **Summarization API**: OpenAI (Chat Completions)
 *   **API Key Management**: `react-native-dotenv` (using `.env` file) 

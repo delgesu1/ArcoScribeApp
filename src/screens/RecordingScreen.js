@@ -6,10 +6,11 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
-  Animated
+  Animated,
+  AppState
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { startRecording, stopRecording, pauseRecording, resumeRecording } from '../services/AudioRecordingService';
+import { startRecording, stopRecording, pauseRecording, resumeRecording, setProgressCallback } from '../services/AudioRecordingService';
 import { formatTime } from '../utils/TimeUtils';
 
 const RecordingScreen = ({ navigation }) => {
@@ -18,43 +19,115 @@ const RecordingScreen = ({ navigation }) => {
   const [recordingTime, setRecordingTime] = useState(0);
   const [recordingId, setRecordingId] = useState(null);
   const [waveformHeight, setWaveformHeight] = useState([]);
+  const [currentSegment, setCurrentSegment] = useState(1);
   const timerRef = useRef(null);
   const waveformAnimationValue = useRef(new Animated.Value(0)).current;
+  const appState = useRef(AppState.currentState);
+  const recordingStartTimeRef = useRef(null);
+  const pauseStartTimeRef = useRef(null);
+  const totalPauseDurationRef = useRef(0);
+  const animationRef = useRef(null);
 
+  // Generate random waveform heights 
   useEffect(() => {
-    // Generate random waveform heights for visualization
     const heights = Array.from({ length: 50 }, () => Math.random() * 50 + 10);
     setWaveformHeight(heights);
+
+    // Set up AppState listener
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      handleAppStateChange(appState.current, nextAppState);
+      appState.current = nextAppState;
+    });
+
+    // Set up progress callback from native module
+    setProgressCallback(handleRecordingProgress);
 
     return () => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      subscription.remove();
+      setProgressCallback(null);
     };
   }, []);
 
+  // Handle recording progress updates from native module
+  const handleRecordingProgress = (data) => {
+    if (data && data.currentTime) {
+      setRecordingTime(Math.floor(data.currentTime));
+      
+      // Update segment number if changed
+      if (data.segmentNumber && data.segmentNumber !== currentSegment) {
+        setCurrentSegment(data.segmentNumber);
+        console.log(`Recording segment changed to: ${data.segmentNumber}`);
+      }
+    }
+  };
+
+  // Animate waveform when recording
   useEffect(() => {
     if (isRecording && !isPaused) {
-      // Animate waveform when recording
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(waveformAnimationValue, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: false,
-          }),
-          Animated.timing(waveformAnimationValue, {
-            toValue: 0,
-            duration: 1000,
-            useNativeDriver: false,
-          }),
-        ])
-      ).start();
+      startWaveformAnimation();
     } else {
-      // Stop animation when not recording
-      waveformAnimationValue.stopAnimation();
+      stopWaveformAnimation();
     }
   }, [isRecording, isPaused, waveformAnimationValue]);
+
+  // Handle app state changes
+  const handleAppStateChange = (currentState, nextState) => {
+    console.log(`App state changed from ${currentState} to ${nextState}`);
+    
+    if (nextState === 'active') {
+      // App came to foreground
+      if (isRecording && !isPaused) {
+        // Restart UI animations/timers only (recording continues in native module)
+        startWaveformAnimation();
+        
+        // We don't need to restart the timer as we're now getting updates from the native module
+      }
+    } else if (nextState === 'background') {
+      // App went to background
+      // Stop UI animations and timers to save resources
+      stopWaveformAnimation();
+      
+      // Note: The actual recording continues in the native module
+      // We're just pausing UI updates to save battery/resources
+    }
+  };
+
+  // Start waveform animation
+  const startWaveformAnimation = () => {
+    // Stop any existing animation first
+    stopWaveformAnimation();
+    
+    // Create and store the animation reference
+    animationRef.current = Animated.loop(
+      Animated.sequence([
+        Animated.timing(waveformAnimationValue, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: false,
+        }),
+        Animated.timing(waveformAnimationValue, {
+          toValue: 0,
+          duration: 1000,
+          useNativeDriver: false,
+        }),
+      ])
+    );
+    
+    // Start the animation
+    animationRef.current.start();
+  };
+
+  // Stop waveform animation
+  const stopWaveformAnimation = () => {
+    if (animationRef.current) {
+      animationRef.current.stop();
+      animationRef.current = null;
+    }
+    waveformAnimationValue.stopAnimation();
+  };
 
   const handleStartRecording = async () => {
     try {
@@ -62,11 +135,11 @@ const RecordingScreen = ({ navigation }) => {
       setRecordingId(id);
       setIsRecording(true);
       setIsPaused(false);
+      recordingStartTimeRef.current = Date.now();
+      setCurrentSegment(1);
       
-      // Start timer
-      timerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
+      // Timer is no longer needed as we're getting updates from native module
+      // via the progress callback
     } catch (error) {
       console.error('Failed to start recording:', error);
     }
@@ -76,7 +149,7 @@ const RecordingScreen = ({ navigation }) => {
     if (!isRecording) return;
     
     try {
-      clearInterval(timerRef.current);
+      stopWaveformAnimation();
       const result = await stopRecording();
       
       // Navigate back to home screen
@@ -87,6 +160,9 @@ const RecordingScreen = ({ navigation }) => {
       setIsRecording(false);
       setIsPaused(false);
       setRecordingTime(0);
+      recordingStartTimeRef.current = null;
+      pauseStartTimeRef.current = null;
+      totalPauseDurationRef.current = 0;
     }
   };
 
@@ -95,13 +171,23 @@ const RecordingScreen = ({ navigation }) => {
     
     try {
       if (isPaused) {
+        // Resume recording
         await resumeRecording();
-        timerRef.current = setInterval(() => {
-          setRecordingTime(prev => prev + 1);
-        }, 1000);
+        
+        // Calculate total pause duration
+        if (pauseStartTimeRef.current) {
+          const pauseDuration = Date.now() - pauseStartTimeRef.current;
+          totalPauseDurationRef.current += pauseDuration;
+          pauseStartTimeRef.current = null;
+        }
+        
+        // Animations will restart from the useEffect
       } else {
-        clearInterval(timerRef.current);
+        // Pause recording
         await pauseRecording();
+        pauseStartTimeRef.current = Date.now();
+        
+        // Animations will stop from the useEffect
       }
       setIsPaused(!isPaused);
     } catch (error) {
@@ -153,6 +239,10 @@ const RecordingScreen = ({ navigation }) => {
       
       <View style={styles.contentContainer}>
         <Text style={styles.timerText}>{formatTime(recordingTime)}</Text>
+        
+        {isRecording && currentSegment > 1 && (
+          <Text style={styles.segmentText}>Segment: {currentSegment}</Text>
+        )}
         
         {renderWaveform()}
         
@@ -212,7 +302,12 @@ const styles = StyleSheet.create({
   timerText: {
     fontSize: 60,
     fontWeight: '200',
-    marginBottom: 40,
+    marginBottom: 10,
+  },
+  segmentText: {
+    fontSize: 16,
+    color: '#8E8E93',
+    marginBottom: 20,
   },
   waveformContainer: {
     flexDirection: 'row',

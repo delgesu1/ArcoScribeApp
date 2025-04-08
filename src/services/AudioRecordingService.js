@@ -1,15 +1,70 @@
-import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+import { NativeModules, NativeEventEmitter, Platform, PermissionsAndroid } from 'react-native';
 import RNFS from 'react-native-fs';
-import { Platform, PermissionsAndroid } from 'react-native';
 import { Recording } from '../utils/DataModels';
 import { formatTime } from '../utils/TimeUtils';
 
-let audioRecorderPlayer = new AudioRecorderPlayer();
+const { AudioRecorderModule } = NativeModules;
+const audioRecorderEvents = new NativeEventEmitter(AudioRecorderModule);
+
+// Variable to store event subscription references for cleanup
+let eventSubscriptions = [];
+
+// Variables to track current recording state
+let currentRecordingId = null;
 let currentRecordingPath = null;
 let recordingStartTime = null;
+let currentSegmentPaths = [];
+
+// Progress callback for React components 
+let progressCallback = null;
 
 // Flag to enable mock recording mode for testing
 const USE_MOCK_RECORDING = false;
+
+// Initialize event listeners
+const setupEventListeners = () => {
+  // Clean up any existing event listeners first
+  removeEventListeners();
+  
+  // Create new listeners
+  eventSubscriptions = [
+    // Recording progress updates
+    audioRecorderEvents.addListener('onRecordingProgress', (data) => {
+      // Update local tracking of recording time
+      if (progressCallback) {
+        progressCallback(data);
+      }
+    }),
+    
+    // Recording segment complete
+    audioRecorderEvents.addListener('onRecordingSegmentComplete', (data) => {
+      console.log(`[AudioRecordingService] Recording segment completed: ${data.segmentNumber}`, data);
+      // Store segment path
+      if (data.segmentPath && !currentSegmentPaths.includes(data.segmentPath)) {
+        currentSegmentPaths.push(data.segmentPath);
+      }
+    }),
+    
+    // Recording finished
+    audioRecorderEvents.addListener('onRecordingFinished', (data) => {
+      console.log('[AudioRecordingService] Recording finished:', data);
+    }),
+    
+    // Recording errors
+    audioRecorderEvents.addListener('onRecordingError', (error) => {
+      console.error('[AudioRecordingService] Recording error:', error);
+    })
+  ];
+};
+
+// Remove event listeners
+const removeEventListeners = () => {
+  eventSubscriptions.forEach(subscription => subscription.remove());
+  eventSubscriptions = [];
+};
+
+// Set up event listeners immediately
+setupEventListeners();
 
 // Utility to check if directory is writable
 const ensureDirectoryIsWritable = async (dirPath) => {
@@ -107,30 +162,69 @@ const requestAndroidPermission = async () => {
   }
 };
 
+// Save recording metadata initially when recording starts
+const saveInitialRecordingMetadata = async (recordingId, filePath, startTime) => {
+  try {
+    const recordings = await getRecordings();
+    const newRecording = new Recording({
+      id: recordingId,
+      title: `${formatDate(startTime)} (In Progress)`, // Temporary title
+      filePath: filePath,
+      date: formatDate(startTime),
+      duration: '0:00', // Placeholder duration
+      processingStatus: 'recording_active', // New status
+    });
+    
+    recordings.unshift(newRecording); // Add to the beginning
+
+    const recordingsJson = JSON.stringify(recordings, null, 2);
+    const recordingsDir = await getRecordingsDirectory();
+    await RNFS.writeFile(`${recordingsDir}/recordings.json`, recordingsJson, 'utf8');
+    console.log(`[AudioRecordingService] Saved initial metadata for recording_active ID: ${recordingId}`);
+    return true;
+  } catch (error) {
+    console.error(`[AudioRecordingService] Error saving initial metadata for ID: ${recordingId}:`, error);
+    // Don't throw here, allow recording to potentially continue
+    return false; 
+  }
+};
+
+// Set progress callback
+export const setProgressCallback = (callback) => {
+  progressCallback = callback;
+};
+
 // Start recording
 export const startRecording = async () => {
   try {
     console.log('Starting recording process...');
+    
+    // Reset segment tracking
+    currentSegmentPaths = [];
     
     // Mock mode check remains for backward compatibility
     if (USE_MOCK_RECORDING) {
       console.log('MOCK RECORDING MODE: Creating simulated recording');
       
       // Generate mock data
-      const recordingId = generateId();
+      const mockRecordingId = generateId();
       const recordingsDir = await getRecordingsDirectory(); 
-      const fileName = `mock_recording_${recordingId}.${Platform.OS === 'ios' ? 'm4a' : 'mp3'}`;
-      const filePath = `${recordingsDir}/${fileName}`;
+      const fileName = `mock_recording_${mockRecordingId}.${Platform.OS === 'ios' ? 'm4a' : 'mp3'}`;
+      const mockFilePath = `${recordingsDir}/${fileName}`;
       
       // Create an empty file to simulate a recording
-      await RNFS.writeFile(filePath, '', 'utf8');
-      console.log('Created mock recording file at:', filePath);
+      await RNFS.writeFile(mockFilePath, '', 'utf8');
+      console.log('Created mock recording file at:', mockFilePath);
       
       // Set recording start time and path
       recordingStartTime = Date.now();
-      currentRecordingPath = filePath;
+      currentRecordingPath = mockFilePath;
+      currentRecordingId = mockRecordingId;
       
-      return recordingId;
+      // Save initial mock metadata
+      await saveInitialRecordingMetadata(mockRecordingId, mockFilePath, recordingStartTime);
+
+      return mockRecordingId;
     }
     
     // Non-mock mode - actual recording
@@ -143,73 +237,32 @@ export const startRecording = async () => {
       }
     }
     
-    // Create a fresh recorder instance
-    audioRecorderPlayer = new AudioRecorderPlayer();
+    // Configure segment duration (in seconds)
+    const segmentDuration = 15 * 60;
+    console.log(`[AudioRecordingService] Calling setMaxSegmentDuration with: ${segmentDuration}`);
+    // Temporarily disabled to debug freeze issue - native module has a default
+    // await AudioRecorderModule.setMaxSegmentDuration(segmentDuration);
     
-    // Set subscription duration for more frequent updates
-    audioRecorderPlayer.setSubscriptionDuration(0.1); // 100ms intervals
-    
-    // Get directory path
-    const recordingsDir = await getRecordingsDirectory();
-    console.log('Recording directory:', recordingsDir);
-    
-    // Generate unique filename
-    const recordingId = generateId();
-    const fileName = `recording_${recordingId}.${Platform.OS === 'ios' ? 'm4a' : 'mp3'}`;
-    
-    // Create the full path according to documentation
-    let filePath;
-    if (Platform.OS === 'ios') {
-      filePath = `file://${recordingsDir}/${fileName}`; 
-    } else {
-      filePath = `${recordingsDir}/${fileName}`; // Android path
-    }
-    
-    console.log('Recording file path:', filePath);
-    
-    // Use the same audio configuration for both platforms
-    // Follow the exact patterns from the documentation
-    const audioSet = {
-      // iOS settings
-      AVEncoderAudioQualityKeyIOS: 'low',
-      AVNumberOfChannelsKeyIOS: 1,
-      AVFormatIDKeyIOS: 'aac',
-      
-      // Android settings
-      AudioEncoderAndroid: 'aac',
-      AudioSourceAndroid: 'mic',
-      OutputFormatAndroid: 'aac_adts',
-    };
-    
-    // Enable metering for visualizing audio levels
-    const meteringEnabled = true;
-    
-    // Start recording with the correct parameters as per documentation
-    console.log('Starting recorder with audioSet:', audioSet);
+    // Start recording using native module
     recordingStartTime = Date.now();
+    const result = await AudioRecorderModule.startRecording({});
     
-    // This matches the documentation example
-    const result = await audioRecorderPlayer.startRecorder(
-      filePath,
-      audioSet,
-      meteringEnabled
-    );
+    // Store the recording info
+    currentRecordingId = result.recordingId;
+    currentRecordingPath = result.filePath;
     
-    console.log('Recording started, path:', result);
-    currentRecordingPath = result;
+    console.log('Recording started:', result);
     
-    // Add record back listener to get updates on recording progress
-    audioRecorderPlayer.addRecordBackListener((e) => {
-      // Log recording progress but not too frequently to avoid flooding console
-      if (e.currentPosition % 1000 < 100) { // Log roughly every second
-        console.log('Recording progress:', e.currentPosition, 'metering:', e.currentMetering);
-      }
-    });
+    // Save initial metadata
+    await saveInitialRecordingMetadata(result.recordingId, result.filePath, recordingStartTime);
     
-    return recordingId;
+    return result.recordingId;
   } catch (error) {
     console.error('Error starting recording:', error);
     console.error('Error details:', error.message, error.stack);
+    currentRecordingPath = null;
+    currentRecordingId = null;
+    recordingStartTime = null;
     throw error;
   }
 };
@@ -220,13 +273,12 @@ export const pauseRecording = async () => {
     // Check if using mock recording mode
     if (USE_MOCK_RECORDING || (currentRecordingPath && currentRecordingPath.includes('mock_recording'))) {
       console.log('Pausing mock recording');
-      // No actual audio to pause in mock mode, just return success
       return true;
     }
     
-    // Real recording - use audio recorder API
+    // Real recording - use native module
     console.log('Pausing real recording');
-    const result = await audioRecorderPlayer.pauseRecorder();
+    const result = await AudioRecorderModule.pauseRecording();
     console.log('Pause result:', result);
     return true;
   } catch (error) {
@@ -248,13 +300,12 @@ export const resumeRecording = async () => {
     // Check if using mock recording mode
     if (USE_MOCK_RECORDING || (currentRecordingPath && currentRecordingPath.includes('mock_recording'))) {
       console.log('Resuming mock recording');
-      // No actual audio to resume in mock mode, just return success
       return true;
     }
     
-    // Real recording - use audio recorder API
+    // Real recording - use native module
     console.log('Resuming real recording');
-    const result = await audioRecorderPlayer.resumeRecorder();
+    const result = await AudioRecorderModule.resumeRecording();
     console.log('Resume result:', result);
     return true;
   } catch (error) {
@@ -272,122 +323,94 @@ export const resumeRecording = async () => {
 
 // Stop recording
 export const stopRecording = async () => {
+  // Use local variables for the specific recording being stopped
+  const stoppedRecordingPath = currentRecordingPath; 
+  const stoppedRecordingStartTime = recordingStartTime;
+  const stoppedRecordingId = currentRecordingId;
+  
+  // Clear module-level vars immediately to prevent reuse issues if stop fails partially
+  currentRecordingPath = null; 
+  recordingStartTime = null;
+  currentRecordingId = null;
+
+  if (!stoppedRecordingPath || !stoppedRecordingStartTime) {
+      console.warn("[AudioRecordingService] stopRecording called but no active recording path or start time found.");
+      return null; // Indicate nothing was stopped
+  }
+
   try {
     // If we're using a mock recording, handle it differently
-    if (USE_MOCK_RECORDING || (currentRecordingPath && currentRecordingPath.includes('mock_recording'))) {
-      console.log('Stopping mock recording:', currentRecordingPath);
+    if (USE_MOCK_RECORDING || (stoppedRecordingPath && stoppedRecordingPath.includes('mock_recording'))) {
+      console.log('Stopping mock recording:', stoppedRecordingPath);
       
       // Calculate duration
       const recordingEndTime = Date.now();
-      const durationMs = recordingEndTime - recordingStartTime;
+      const durationMs = recordingEndTime - stoppedRecordingStartTime;
       const durationFormatted = formatTime(Math.floor(durationMs / 1000));
       
-      // Create recording object with mock data
-      const recordingId = currentRecordingPath.split('_').pop().split('.')[0];
-      const recording = new Recording({
+      // Extract ID
+      const recordingId = stoppedRecordingPath.split('_').pop().split('.')[0];
+
+      // Prepare updated data for the existing record
+      const updatedData = {
         id: recordingId,
-        title: `${formatDate(recordingStartTime)} (Mock)`,
-        filePath: currentRecordingPath,
-        date: formatDate(recordingStartTime),
-        duration: durationFormatted,
-        processingStatus: 'pending',
+        title: `${formatDate(stoppedRecordingStartTime)} (Mock)`, // Final title
+        filePath: stoppedRecordingPath,
+        date: formatDate(stoppedRecordingStartTime),
+        duration: durationFormatted, // Final duration
+        processingStatus: 'pending', // Final status
         isMock: true
-      });
+      };
       
-      // Save recording metadata
-      await saveRecording(recording);
+      // *** UPDATE Existing Mock Recording Metadata ***
+      await updateRecording(updatedData); 
+      console.log(`[AudioRecordingService] Updated metadata for stopped mock recording ID: ${recordingId}`);
       
-      // Reset variables
-      currentRecordingPath = null;
-      recordingStartTime = null;
+      // Find the Recording object to return (optional, depends if caller needs the object)
+      const finalRecording = Recording.fromJSON(updatedData); // Create object from final data
       
-      return recording;
+      return finalRecording; 
     }
     
-    // Real recording - use the original approach
-    console.log('Stopping real recording');
+    // --- Real recording ---
+    console.log('Stopping real recording for path:', stoppedRecordingPath);
     
-    // Stop recording according to documentation
-    const result = await audioRecorderPlayer.stopRecorder();
+    // Stop recording using native module
+    const result = await AudioRecorderModule.stopRecording();
     console.log('Stop result:', result);
     
-    // Always remove the listener (this is critical)
-    audioRecorderPlayer.removeRecordBackListener();
+    // Calculate duration and format it
+    const durationFormatted = formatTime(Math.floor(result.duration));
     
-    // Calculate duration
-    const recordingEndTime = Date.now();
-    const durationMs = recordingEndTime - recordingStartTime;
-    const durationFormatted = formatTime(Math.floor(durationMs / 1000));
-    
-    // Create recording object
-    // Extract ID using a more robust approach
-    let recordingId;
-    try {
-      recordingId = currentRecordingPath.split('_').pop().split('.')[0];
-    } catch (error) {
-      // Fallback to current timestamp if we can't parse the ID
-      recordingId = generateId();
-    }
-    
-    const recording = new Recording({
-      id: recordingId,
-      title: `${formatDate(recordingStartTime)}`,
-      filePath: currentRecordingPath,
-      date: formatDate(recordingStartTime),
-      duration: durationFormatted,
-      processingStatus: 'pending'
-    });
-    
-    // Save recording metadata
-    await saveRecording(recording);
-    
-    // Reset variables
-    currentRecordingPath = null;
-    recordingStartTime = null;
-    
-    return recording;
+    // Prepare data for updating the existing record
+    const updatedData = {
+       id: stoppedRecordingId,
+       title: `${formatDate(stoppedRecordingStartTime)}`, // Final title
+       filePath: result.filePath, // Use the path returned from native module
+       date: formatDate(stoppedRecordingStartTime),
+       duration: durationFormatted, // Final duration
+       processingStatus: 'pending', // Final status
+       segmentPaths: result.segmentPaths || [] // Store segment paths for later (optional)
+    };
+
+    // *** UPDATE Existing Recording Metadata ***
+    await updateRecording(updatedData);
+    console.log(`[AudioRecordingService] Updated metadata for stopped recording ID: ${stoppedRecordingId}`);
+
+    // Return the final recording object
+    const finalRecording = Recording.fromJSON(updatedData);
+    return finalRecording;
+
   } catch (error) {
     console.error('Error stopping recording:', error);
     console.error('Error details:', error.message, error.stack);
     
-    // Clean up listeners even on error
-    try {
-      audioRecorderPlayer.removeRecordBackListener();
-    } catch (listenerError) {
-      console.log('Error removing listener:', listenerError);
+    // If stopping failed, the 'recording_active' entry remains in recordings.json.
+    if (stoppedRecordingPath) {
+       console.log(`[AudioRecordingService] Recording stop failed for path: ${stoppedRecordingPath}. Metadata will remain 'recording_active'.`);
     }
     
-    // If stopping the real recording fails but we have a recording path
-    if (currentRecordingPath) {
-      console.log('Creating emergency recording after stop failure');
-      
-      // Calculate duration
-      const recordingEndTime = Date.now();
-      const durationMs = recordingEndTime - recordingStartTime;
-      const durationFormatted = formatTime(Math.floor(durationMs / 1000));
-      
-      // Create recording object with emergency data
-      const recordingId = currentRecordingPath.split('_').pop().split('.')[0];
-      const recording = new Recording({
-        id: recordingId,
-        title: `${formatDate(recordingStartTime)} (Recovery)`,
-        filePath: currentRecordingPath,
-        date: formatDate(recordingStartTime),
-        duration: durationFormatted,
-        processingStatus: 'error'
-      });
-      
-      // Save recording metadata
-      await saveRecording(recording);
-      
-      // Reset variables
-      currentRecordingPath = null;
-      recordingStartTime = null;
-      
-      return recording;
-    }
-    
-    throw error;
+    throw error; // Re-throw the error so the UI knows it failed
   }
 };
 
@@ -488,27 +511,6 @@ export const updateRecording = async (updatedRecording) => {
   }
 };
 
-// Save recording metadata
-const saveRecording = async (recording) => {
-  try {
-    // Get existing recordings
-    const recordings = await getRecordings();
-    
-    // Add new recording
-    recordings.unshift(recording);
-    
-    // Save to storage
-    const recordingsJson = JSON.stringify(recordings);
-    const recordingsDir = await getRecordingsDirectory();
-    await RNFS.writeFile(`${recordingsDir}/recordings.json`, recordingsJson, 'utf8');
-    
-    return true;
-  } catch (error) {
-    console.error('Error saving recording:', error);
-    throw error;
-  }
-};
-
 // Delete recording
 export const deleteRecording = async (id) => {
   try {
@@ -529,6 +531,18 @@ export const deleteRecording = async (id) => {
       }
     }
     
+    // Delete any segment files if they exist
+    if (recordingToDelete.segmentPaths && Array.isArray(recordingToDelete.segmentPaths)) {
+      for (const segmentPath of recordingToDelete.segmentPaths) {
+        if (segmentPath) {
+          const exists = await RNFS.exists(segmentPath);
+          if (exists) {
+            await RNFS.unlink(segmentPath);
+          }
+        }
+      }
+    }
+    
     // Remove from list
     const updatedRecordings = recordings.filter(recording => recording.id !== id);
     
@@ -543,6 +557,15 @@ export const deleteRecording = async (id) => {
     throw error;
   }
 };
+
+// --- PLAYBACK FUNCTIONS ---
+// For playback, we'll keep using the react-native-audio-recorder-player library in a transitional approach.
+// This allows us to focus on fixing the recording functionality first.
+// In a future update, we could move playback to the native module as well.
+
+// The current implementation requires AudioRecorderPlayer for playback
+import AudioRecorderPlayer from 'react-native-audio-recorder-player';
+let audioRecorderPlayer = new AudioRecorderPlayer();
 
 // Play recording
 export const playRecording = async (filePath, onProgress, onFinished) => {
@@ -567,8 +590,15 @@ export const playRecording = async (filePath, onProgress, onFinished) => {
     }
     
     // Real recording
-    console.log('Starting real playback for:', filePath);
-    const result = await audioRecorderPlayer.startPlayer(filePath);
+    // Ensure the filePath DOES have the correct prefix for the player library
+    let pathForPlayer = filePath;
+    if (!pathForPlayer.startsWith('file://')) {
+      pathForPlayer = `file://${pathForPlayer}`;
+    }
+    console.log(`Starting real playback for path: ${filePath}`);
+    console.log(`Using path with file:// prefix for player: ${pathForPlayer}`);
+    
+    const result = await audioRecorderPlayer.startPlayer(pathForPlayer);
     console.log('Playback started:', result);
     
     // Add listener for progress updates

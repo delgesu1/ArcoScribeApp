@@ -12,6 +12,7 @@
 		1EFFDAAFBCBBCAF68F0F1344 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		DA4D40DF2DA4C598004A3EFF /* AudioRecorderModule.m in Sources */ = {isa = PBXBuildFile; fileRef = DA4D40DE2DA4C598004A3EFF /* AudioRecorderModule.m */; };
 		DAFB703E2D9A89CF0033FB7E /* BackgroundTransferManager.m in Sources */ = {isa = PBXBuildFile; fileRef = DAFB703D2D9A89CF0033FB7E /* BackgroundTransferManager.m */; };
 		DAFB70422D9A8C460033FB7E /* File.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFB70412D9A8C460033FB7E /* File.swift */; };
 /* End PBXBuildFile section */
@@ -26,6 +27,8 @@
 		5DCACB8F33CDC322A6C60F78 /* libPods-ArcoScribeApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ArcoScribeApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ArcoScribeApp/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ArcoScribeApp/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		DA4D40DD2DA4C598004A3EFF /* AudioRecorderModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AudioRecorderModule.h; sourceTree = "<group>"; };
+		DA4D40DE2DA4C598004A3EFF /* AudioRecorderModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AudioRecorderModule.m; sourceTree = "<group>"; };
 		DAFB703C2D9A897A0033FB7E /* BackgroundTransferManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BackgroundTransferManager.h; sourceTree = "<group>"; };
 		DAFB703D2D9A89CF0033FB7E /* BackgroundTransferManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BackgroundTransferManager.m; sourceTree = "<group>"; };
 		DAFB70412D9A8C460033FB7E /* File.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = File.swift; sourceTree = "<group>"; };
@@ -48,6 +51,8 @@
 		13B07FAE1A68108700A75B9A /* ArcoScribeApp */ = {
 			isa = PBXGroup;
 			children = (
+				DA4D40DD2DA4C598004A3EFF /* AudioRecorderModule.h */,
+				DA4D40DE2DA4C598004A3EFF /* AudioRecorderModule.m */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				DAFB70412D9A8C460033FB7E /* File.swift */,
@@ -258,6 +263,7 @@
 			files = (
 				DAFB703E2D9A89CF0033FB7E /* BackgroundTransferManager.m in Sources */,
 				DAFB70422D9A8C460033FB7E /* File.swift in Sources */,
+				DA4D40DF2DA4C598004A3EFF /* AudioRecorderModule.m in Sources */,
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -390,10 +396,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
@@ -463,10 +466,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = "ArcoScribeApp-Bridging-Header.h";

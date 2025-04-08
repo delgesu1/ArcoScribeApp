@@ -264,15 +264,105 @@ export const generateHTMLFromMarkdown = (title, markdownContent) => {
 };
 
 /**
- * Show format selection dialog and share the file
- * @param {Object} recording - Recording data containing title and summary
- * @returns {Promise<void>}
+ * Cleans markdown summary by removing code block fences.
+ * @param {string} summary - The raw summary markdown.
+ * @returns {string} - Cleaned markdown string.
  */
-export const showFormatSelectionAndShare = async (recording) => {
-  if (!recording?.summary) {
-    throw new Error('No summary available to share');
-  }
+export const cleanSummaryMarkdown = (summary) => {
+  if (!summary) return '';
+  return summary.replace(/```(\w*)\s*|```/g, '').trim();
+};
 
+/**
+ * Generates combined markdown content from multiple recordings.
+ * @param {Array<Object>} recordings - Array of recording objects.
+ * @returns {string} - Combined markdown string.
+ */
+export const generateCombinedSummaryContent = (recordings) => {
+  let combinedContent = '# Combined Recording Summaries\n\n';
+  recordings.forEach((recording, index) => {
+    if (recording.summary) {
+      const cleanedSummary = cleanSummaryMarkdown(recording.summary);
+      combinedContent += `## Summary for: ${recording.title || `Recording ${index + 1}`}\n\n`;
+      combinedContent += `${cleanedSummary}\n\n`;
+      if (index < recordings.length - 1) {
+        combinedContent += '---\n\n'; // Add separator
+      }
+    }
+  });
+  return combinedContent;
+};
+
+/**
+ * Share content as a markdown file.
+ * @param {string} title - Base title for the shared file.
+ * @param {string} markdownContent - The markdown content to share.
+ * @returns {Promise<boolean>}
+ */
+export const shareContentAsMD = async (title, markdownContent) => {
+  try {
+    const sanitizedTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const filename = `${sanitizedTitle}_summary.md`;
+    const path = `${RNFS.CachesDirectoryPath}/${filename}`;
+    
+    await RNFS.writeFile(path, markdownContent, 'utf8');
+    
+    const shareOptions = {
+      title: `${title} Summary`,
+      message: `${title} Lesson Summary`,
+      url: Platform.OS === 'ios' ? `file://${path}` : path, // Ensure correct path format
+      type: 'text/markdown',
+    };
+    
+    await Share.share(shareOptions);
+    
+    // Clean up temporary file
+    setTimeout(() => RNFS.unlink(path).catch(err => console.error('MD cleanup failed:', err)), 5000);
+    
+    return true;
+  } catch (error) {
+    console.error('Error sharing markdown summary:', error);
+    throw error;
+  }
+};
+
+/**
+ * Share content as a PDF file.
+ * @param {string} title - Base title for the shared file.
+ * @param {string} markdownContent - The markdown content to convert and share.
+ * @returns {Promise<boolean>}
+ */
+export const shareContentAsPDF = async (title, markdownContent) => {
+  try {
+    const htmlContent = generateHTMLFromMarkdown(title, markdownContent);
+    const pdfPath = await createPDFFromHTML(title, htmlContent);
+    
+    const shareOptions = {
+      title: `${title} Summary`,
+      message: `${title} Lesson Summary`,
+      url: Platform.OS === 'ios' ? pdfPath : `file://${pdfPath}`, // Ensure correct path format
+      type: 'application/pdf',
+    };
+    
+    await Share.share(shareOptions);
+
+    // PDF cleanup might depend on RNHTMLtoPDF implementation, assuming it manages its output
+    // If issues arise, add: setTimeout(() => RNFS.unlink(pdfPath).catch(err => console.error('PDF cleanup failed:', err)), 5000);
+
+    return true;
+  } catch (error) {
+    console.error('Error sharing PDF summary:', error);
+    throw error;
+  }
+};
+
+/**
+ * Show format selection dialog and share the generated content.
+ * @param {string} title - Base title for the shared file.
+ * @param {string} contentGenerator - Function that generates the markdown content to share (e.g., () => recording.summary or () => generateCombinedSummaryContent(selectedRecordings)).
+ * @returns {Promise<boolean>} - True if shared, false if cancelled.
+ */
+export const showFormatSelectionAndShare = async (title, contentGenerator) => {
   return new Promise((resolve, reject) => {
     Alert.alert(
       'Choose Format',
@@ -282,7 +372,8 @@ export const showFormatSelectionAndShare = async (recording) => {
           text: 'Markdown (.md)',
           onPress: async () => {
             try {
-              await shareRecordingSummaryAsMD(recording);
+              const content = contentGenerator(); // Generate content only when needed
+              await shareContentAsMD(title, content);
               resolve(true);
             } catch (error) {
               reject(error);
@@ -293,7 +384,8 @@ export const showFormatSelectionAndShare = async (recording) => {
           text: 'PDF (.pdf)',
           onPress: async () => {
             try {
-              await shareRecordingSummaryAsPDF(recording);
+              const content = contentGenerator(); // Generate content only when needed
+              await shareContentAsPDF(title, content);
               resolve(true);
             } catch (error) {
               reject(error);
@@ -311,115 +403,15 @@ export const showFormatSelectionAndShare = async (recording) => {
 };
 
 /**
- * Share recording summary as a markdown file
+ * Share SINGLE recording summary (backward compatibility / specific use case)
  * @param {Object} recording - Recording data containing title and summary
- * @returns {Promise<boolean>}
- */
-export const shareRecordingSummaryAsMD = async (recording) => {
-  if (!recording?.summary) {
-    throw new Error('No summary available to share');
-  }
-  
-  try {
-    // Create filename based on recording title (sanitized)
-    const sanitizedTitle = recording.title
-      .replace(/[^a-z0-9]/gi, '_')
-      .toLowerCase();
-    const filename = `${sanitizedTitle}_summary.md`;
-    
-    // Define path where to save the file temporarily
-    const path = `${RNFS.CachesDirectoryPath}/${filename}`;
-    
-    // Clean the summary by removing markdown code block delimiters
-    const cleanedSummary = recording.summary.replace(/```(\w*)\s*|```/g, '').trim();
-    
-    // Write the cleaned summary to the file
-    await RNFS.writeFile(path, cleanedSummary, 'utf8');
-    
-    // On iOS, we can share the file using the built-in Share API
-    if (Platform.OS === 'ios') {
-      const shareOptions = {
-        title: `${recording.title} Summary`,
-        message: `${recording.title} Lesson Summary`,
-        url: `file://${path}`,
-        type: 'text/markdown',
-      };
-      
-      await Share.share(shareOptions);
-      
-      // Clean up the temporary file after a delay
-      setTimeout(async () => {
-        try {
-          await RNFS.unlink(path);
-        } catch (error) {
-          console.error('Error cleaning up temporary file:', error);
-        }
-      }, 5000);
-      
-      return true;
-    } 
-    // For Android, we'd implement a different approach, but for now just share the text
-    else {
-      await Share.share({
-        title: `${recording.title} Summary`,
-        message: cleanedSummary,
-      });
-      
-      // Clean up the temporary file
-      await RNFS.unlink(path);
-      
-      return true;
-    }
-  } catch (error) {
-    console.error('Error sharing markdown summary:', error);
-    throw error;
-  }
-};
-
-/**
- * Share recording summary as a PDF file
- * @param {Object} recording - Recording data containing title and summary
- * @returns {Promise<boolean>}
- */
-export const shareRecordingSummaryAsPDF = async (recording) => {
-  if (!recording?.summary) {
-    throw new Error('No summary available to share');
-  }
-  
-  try {
-    // Clean the summary by removing markdown code block delimiters
-    const cleanedSummary = recording.summary.replace(/```(\w*)\s*|```/g, '').trim();
-    
-    // Convert markdown to HTML
-    const htmlContent = generateHTMLFromMarkdown(recording.title, cleanedSummary);
-    
-    // Generate PDF
-    const pdfPath = await createPDFFromHTML(recording.title, htmlContent);
-    
-    // Share PDF
-    const shareOptions = {
-      title: `${recording.title} Summary`,
-      message: `${recording.title} Lesson Summary`,
-      url: Platform.OS === 'android' ? `file://${pdfPath}` : pdfPath,
-      type: 'application/pdf',
-    };
-    
-    await Share.share(shareOptions);
-    
-    // Clean up is handled by the system since we're using the Documents directory
-    
-    return true;
-  } catch (error) {
-    console.error('Error sharing PDF summary:', error);
-    throw error;
-  }
-};
-
-/**
- * Share recording summary (backward compatibility)
- * @param {Object} recording - Recording data containing title and summary
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} - True if shared, false if cancelled.
  */
 export const shareRecordingSummary = async (recording) => {
-  return showFormatSelectionAndShare(recording);
+  if (!recording?.summary) {
+    Alert.alert('No Summary', 'This recording does not have a summary to share.');
+    return false;
+  }
+  const cleanedSummary = cleanSummaryMarkdown(recording.summary);
+  return showFormatSelectionAndShare(recording.title, () => cleanedSummary);
 }; 

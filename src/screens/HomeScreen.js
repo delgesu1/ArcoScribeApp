@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -9,14 +9,24 @@ import {
   SafeAreaView,
   StatusBar,
   ActivityIndicator,
-  Alert
+  Alert,
+  Platform
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useIsFocused } from '@react-navigation/native';
 import { getRecordings, updateRecording, deleteRecording } from '../services/AudioRecordingService';
 import { transcribeRecording } from '../services/TranscriptionService';
 import { Swipeable } from 'react-native-gesture-handler';
-import { shareRecordingSummary } from '../utils/ShareUtils';
+import { 
+  shareRecordingSummary, 
+  generateCombinedSummaryContent, 
+  showFormatSelectionAndShare, 
+  cleanSummaryMarkdown,
+  generateHTMLFromMarkdown,
+  createPDFFromHTML
+} from '../utils/ShareUtils';
+import RNFS from 'react-native-fs';
+import Share from 'react-native-share';
 
 const HomeScreen = ({ navigation }) => {
   const [recordings, setRecordings] = useState([]);
@@ -26,6 +36,11 @@ const HomeScreen = ({ navigation }) => {
   const intervalRef = useRef(null);
   // Keep track of open swipeables so we can close them when needed
   const swipeableRefs = useRef({});
+  const [filteredRecordings, setFilteredRecordings] = useState([]);
+
+  // State for Edit Mode
+  const [isEditing, setIsEditing] = useState(false);
+  const [selectedRecordingIds, setSelectedRecordingIds] = useState(new Set());
 
   const loadRecordings = useCallback(async (forceRefresh = false) => {
     if (processingId && !forceRefresh) return;
@@ -45,6 +60,22 @@ const HomeScreen = ({ navigation }) => {
       console.error('Failed to load recordings:', error);
     }
   }, [processingId]);
+
+  // Filter recordings based on search query
+  useEffect(() => {
+    if (searchQuery === '') {
+      setFilteredRecordings(recordings);
+    } else {
+      const lowerCaseQuery = searchQuery.toLowerCase();
+      const filtered = recordings.filter(recording => 
+        recording.title?.toLowerCase().includes(lowerCaseQuery) ||
+        recording.date?.toLowerCase().includes(lowerCaseQuery) || // Also search date
+        (recording.transcript && recording.transcript.toLowerCase().includes(lowerCaseQuery)) ||
+        (recording.summary && recording.summary.toLowerCase().includes(lowerCaseQuery))
+      );
+      setFilteredRecordings(filtered);
+    }
+  }, [searchQuery, recordings]); // Re-run filter when query or recordings change
 
   useEffect(() => {
     if (isFocused) {
@@ -165,13 +196,215 @@ const HomeScreen = ({ navigation }) => {
     }
   };
 
-  const filteredRecordings = recordings.filter(recording => 
-    recording.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (recording.transcript && recording.transcript.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  // --- Edit Mode Toggle --- 
+  const toggleEditMode = useCallback(() => {
+    console.log(`[HomeScreen] Toggling edit mode from ${isEditing} to ${!isEditing}`);
+    setIsEditing(prev => !prev);
+    setSelectedRecordingIds(new Set()); // Clear selection when toggling mode
+  }, [isEditing]); // Dependency on isEditing for logging, though setter itself is stable
+
+  // Set header button based on edit mode
+  useLayoutEffect(() => {
+    console.log(`[HomeScreen] useLayoutEffect running, isEditing: ${isEditing}`); // Add Log
+
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity onPress={toggleEditMode} style={{ marginRight: 15 }}>
+          <Text style={{ color: '#007AFF', fontSize: 17 }}>
+            {isEditing ? 'Done' : 'Edit'} 
+          </Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, isEditing, toggleEditMode]); // Add toggleEditMode back
+
+  // Handle bulk deletion
+  const handleBulkDelete = async () => {
+    const idsToDelete = Array.from(selectedRecordingIds);
+    if (idsToDelete.length === 0) return;
+
+    Alert.alert(
+      `Delete ${idsToDelete.length} Recording${idsToDelete.length > 1 ? 's' : ''}?`,
+      'This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Call deleteRecording for each selected ID
+              await Promise.all(idsToDelete.map(id => deleteRecording(id)));
+              
+              // Update local state immediately
+              setRecordings(prev => prev.filter(r => !selectedRecordingIds.has(r.id)));
+              
+              console.log(`Recordings deleted: ${idsToDelete.join(', ')}`);
+              // Exit edit mode after deletion
+              toggleEditMode(); 
+            } catch (error) {
+              console.error('Failed to delete recordings:', error);
+              Alert.alert('Error', 'Failed to delete one or more recordings.');
+            }
+          }
+        },
+      ]
+    );
+  };
+
+  // Handle bulk sharing
+  const handleBulkShare = async () => {
+    const idsToShare = Array.from(selectedRecordingIds);
+    if (idsToShare.length === 0) return;
+
+    let validRecordings = [];
+    let invalidRecordings = [];
+
+    try {
+      // Fetch full data and categorize recordings
+      const allRecordings = await getRecordings(); 
+      idsToShare.forEach(id => {
+        const recording = allRecordings.find(r => r.id === id);
+        if (recording && recording.processingStatus === 'complete' && recording.summary) {
+          validRecordings.push(recording);
+        } else if (recording) {
+          invalidRecordings.push(recording);
+        }
+      });
+
+      // Check if any valid recordings were found
+      if (validRecordings.length === 0) {
+        let message = 'None of the selected recordings have a completed summary available to share.';
+        if (invalidRecordings.length > 0) {
+          message += '\n\nThe following recordings cannot be shared:\n' + invalidRecordings.map(r => `- ${r.title} (${r.processingStatus})`).join('\n');
+        }
+        return Alert.alert('Nothing to Share', message);
+      }
+
+      // Function to proceed with sharing the valid recordings
+      const proceedWithSharing = async (chosenFormat) => {
+        let filePaths = [];
+        let tempFilePaths = []; 
+
+        // Generate individual files (format is now passed in)
+        for (const recording of validRecordings) {
+          const cleanedSummary = cleanSummaryMarkdown(recording.summary);
+          const sanitizedTitle = recording.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+          if (chosenFormat === 'pdf') {
+            const htmlContent = generateHTMLFromMarkdown(recording.title, cleanedSummary);
+            console.log(`[HomeScreen] Generating PDF for: ${recording.title}`);
+            try {
+              const pdfPath = await createPDFFromHTML(recording.title, htmlContent);
+              console.log(`[HomeScreen] PDF generated at path: ${pdfPath}`);
+              const pdfExists = await RNFS.exists(pdfPath);
+              console.log(`[HomeScreen] PDF file exists at path? ${pdfExists ? 'YES' : 'NO'}`);
+              if (pdfExists) {
+                filePaths.push(Platform.OS === 'ios' ? pdfPath : `file://${pdfPath}`);
+              } else {
+                console.warn(`[HomeScreen] PDF file generation reported success but file not found at: ${pdfPath}`);
+              }
+            } catch (pdfError) {
+                console.error(`[HomeScreen] Error generating PDF for ${recording.title}:`, pdfError);
+                // Optionally alert the user or skip this file
+            }
+          } else { // md
+            const filename = `${sanitizedTitle}_summary.md`;
+            const mdPath = `${RNFS.CachesDirectoryPath}/${filename}`;
+            console.log(`[HomeScreen] Generating MD for: ${recording.title} at path: ${mdPath}`);
+            try {
+              await RNFS.writeFile(mdPath, cleanedSummary, 'utf8');
+              const urlPath = Platform.OS === 'ios' ? `file://${mdPath}` : mdPath;
+              filePaths.push(urlPath);
+              tempFilePaths.push(mdPath); // Add to list for cleanup
+            } catch (mdError) {
+              console.error(`[HomeScreen] Error generating MD for ${recording.title}:`, mdError);
+              // Optionally alert the user or skip this file
+            }
+          }
+        }
+
+        if (filePaths.length === 0) {
+          // Show alert only if generation failed for ALL, otherwise proceed with successful ones
+          return Alert.alert('Error', 'Failed to generate files for sharing.');
+        }
+
+        // Use Share.open for multiple files
+        const shareOptions = {
+          title: validRecordings.length > 1 ? 'Share Summaries' : `Share ${validRecordings[0].title} Summary`,
+          urls: filePaths,
+          type: chosenFormat === 'pdf' ? 'application/pdf' : 'text/markdown',
+          subject: validRecordings.length > 1 ? 'Lesson Summaries' : `${validRecordings[0].title} Summary`, // For email
+        };
+
+        await Share.open(shareOptions);
+        
+        // Clean up temporary MD files
+        if (tempFilePaths.length > 0) {
+          setTimeout(() => { 
+            tempFilePaths.forEach(p => RNFS.unlink(p).catch(err => console.error('MD cleanup failed:', err)));
+          }, 5000); 
+        }
+
+      };
+
+      // Define the format selection logic separately
+      const selectFormatAndShare = async () => {
+        const chosenFormat = await new Promise((resolve) => {
+          Alert.alert(
+            'Choose Format',
+            `Share summaries for ${validRecordings.length} recording${validRecordings.length > 1 ? 's' : ''}?`,
+            [
+              { text: 'Markdown (.md)', onPress: () => resolve('md') },
+              { text: 'PDF (.pdf)', onPress: () => resolve('pdf') },
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) }
+            ]
+          );
+        });
+
+        if (chosenFormat) {
+          await proceedWithSharing(chosenFormat); // Pass format to the processing function
+        }
+      };
+
+      // If there were invalid items, confirm before proceeding
+      if (invalidRecordings.length > 0) {
+        const invalidTitles = invalidRecordings.map(r => `- ${r.title} (${r.processingStatus})`).join('\n');
+        Alert.alert(
+          'Some Recordings Cannot Be Shared',
+          `The following recordings do not have a completed summary:\n${invalidTitles}\n\nDo you want to share the ${validRecordings.length} valid recording${validRecordings.length > 1 ? 's' : ''}?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Share Valid', onPress: selectFormatAndShare } // Ask for format after confirmation
+          ]
+        );
+      } else {
+        // All selected were valid, ask for format and proceed
+        await selectFormatAndShare();
+      }
+
+    } catch (error) {
+      console.error('Failed to prepare bulk share:', error);
+      Alert.alert('Error', 'Could not prepare summaries for sharing.');
+    }
+  };
+
+  // Handle selecting/deselecting items in edit mode
+  const handleSelectItem = (id) => {
+    setSelectedRecordingIds(prev => {
+      const newSelection = new Set(prev);
+      if (newSelection.has(id)) {
+        newSelection.delete(id);
+      } else {
+        newSelection.add(id);
+      }
+      return newSelection;
+    });
+  };
 
   const renderItem = ({ item }) => {
     const isCurrentlyProcessing = processingId === item.id;
+    const isSelected = selectedRecordingIds.has(item.id);
 
     const statusIcon = () => {
       if (isCurrentlyProcessing) {
@@ -231,14 +464,27 @@ const HomeScreen = ({ navigation }) => {
         rightThreshold={40}
         friction={2}
         overshootRight={false}
-        enabled={!isCurrentlyProcessing} // Disable swiping during processing
+        enabled={!isEditing && !isCurrentlyProcessing} // Disable swiping during editing or processing
       >
-        <View style={styles.recordingItemContainer}> 
-          <TouchableOpacity
-            style={styles.recordingItem}
-            onPress={() => navigation.navigate('RecordingDetail', { recordingId: item.id, title: item.title })}
-            disabled={isCurrentlyProcessing}
+        <View style={[styles.recordingItemContainer, isSelected && styles.selectedItemContainer]}> 
+          <TouchableOpacity 
+            style={[styles.recordingItemRow, isEditing && styles.editingItemRow]} 
+            onPress={() => {
+              if (isEditing) {
+                handleSelectItem(item.id);
+              } else {
+                navigation.navigate('RecordingDetail', { recordingId: item.id, title: item.title });
+              }
+            }}
+            disabled={!isEditing && isCurrentlyProcessing} // Disable navigation only if not editing and processing
           >
+            {isEditing && (
+              <View style={styles.selectionCircleOuter}>
+                <View style={[styles.selectionCircleInner, isSelected && styles.selectionCircleSelected]}>
+                  {isSelected && <Icon name="checkmark" size={16} color="#FFFFFF" />} 
+                </View>
+              </View>
+            )}
             <View style={styles.recordingInfo}>
               <Text style={styles.recordingTitle} numberOfLines={1} ellipsizeMode="tail">{item.title}</Text>
               <View style={styles.dateStatusContainer}>
@@ -305,12 +551,38 @@ const HomeScreen = ({ navigation }) => {
         }
       />
       
-      <TouchableOpacity
-        style={styles.recordButton}
-        onPress={() => navigation.navigate('Recording')}
-      >
-        <Icon name="mic" size={30} color="#FFFFFF" />
-      </TouchableOpacity>
+      {/* Bottom Action Area */}
+      <View style={styles.bottomActionContainer}>
+        {!isEditing ? (
+          // Record Button when not editing
+          <TouchableOpacity
+            style={styles.recordButton}
+            onPress={() => navigation.navigate('Recording')}
+          >
+            <Icon name="mic" size={30} color="#FFFFFF" />
+          </TouchableOpacity>
+        ) : (
+          // Share/Delete Buttons when editing
+          <View style={styles.editActionsWrapper}>
+            <TouchableOpacity
+              style={[styles.editActionButton, selectedRecordingIds.size === 0 && styles.disabledEditButton]}
+              onPress={handleBulkShare}
+              disabled={selectedRecordingIds.size === 0}
+            >
+              <Icon name="share-outline" size={24} color={selectedRecordingIds.size === 0 ? '#BDBDBD' : '#007AFF'} />
+              <Text style={[styles.editActionText, selectedRecordingIds.size === 0 && styles.disabledText]}>Share</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.editActionButton, selectedRecordingIds.size === 0 && styles.disabledEditButton]}
+              onPress={handleBulkDelete}
+              disabled={selectedRecordingIds.size === 0}
+            >
+              <Icon name="trash-outline" size={24} color={selectedRecordingIds.size === 0 ? '#BDBDBD' : '#FF3B30'} />
+              <Text style={[styles.editActionText, selectedRecordingIds.size === 0 && styles.disabledText]}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
     </SafeAreaView>
   );
 };
@@ -342,8 +614,6 @@ const styles = StyleSheet.create({
   },
   recordingItemContainer: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 0,
-    marginHorizontal: 16,
     marginBottom: 0,
     shadowColor: 'transparent',
     shadowOffset: { width: 0, height: 0 },
@@ -355,6 +625,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F2F2F7',
   },
+  recordingItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E0E0E0',
+  },
+  editingItemRow: {
+    paddingLeft: 0,
+  },
+  selectedItemContainer: {
+    backgroundColor: '#EFEFF4',
+  },
   recordingItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -365,11 +649,13 @@ const styles = StyleSheet.create({
   },
   recordingInfo: {
     flex: 1,
+    marginLeft: 8,
   },
   recordingTitle: {
     fontSize: 17,
     fontWeight: '500',
     marginBottom: 4,
+    marginTop: 4,
   },
   recordingDate: {
     fontSize: 14,
@@ -478,6 +764,62 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     marginRight: 4,
+  },
+  selectionCircleOuter: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: 16,
+  },
+  selectionCircleInner: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#C7C7CC',
+    backgroundColor: '#FFFFFF',
+  },
+  selectionCircleSelected: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomActionContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 90,
+    paddingBottom: 30,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#BDBDBD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editActionsWrapper: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 20,
+  },
+  editActionButton: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  editActionText: {
+    fontSize: 12,
+    marginTop: 4,
+    color: '#007AFF'
+  },
+  disabledEditButton: {
+    opacity: 0.5,
+  },
+  disabledText: {
+    color: '#BDBDBD',
   },
 });
 

@@ -65,6 +65,74 @@ RCT_EXPORT_MODULE();
             NSLog(@"[BackgroundTransferManager] Task %@ safely persisted.", taskId);
         } else {
             NSLog(@"[BackgroundTransferManager] Warning: Failed to validate active tasks dictionary. Storage skipped.");
+            // Consider logging the problematic dictionary structure here for debugging
+        }
+    }
+}
+
+// New helper method to safely update the status of an existing task
+- (void)safelyUpdateTaskStatus:(NSString *)status forTaskId:(NSString *)taskId {
+    @synchronized(self) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSMutableDictionary *activeTasks = [[defaults objectForKey:@"ArcoScribeActiveTasks"] mutableCopy];
+
+        if (activeTasks && activeTasks[taskId]) {
+            NSMutableDictionary *taskInfo = [activeTasks[taskId] mutableCopy];
+            if (taskInfo) {
+                taskInfo[@"status"] = status ?: @"unknown"; // Update status, ensure it's safe
+
+                // Make sure the updated dictionary is still property list compatible
+                NSMutableDictionary *safeUpdatedInfo = [NSMutableDictionary dictionary];
+                 [taskInfo enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+                     safeUpdatedInfo[key] = [self safePropertyListValue:obj];
+                 }];
+
+                activeTasks[taskId] = safeUpdatedInfo; // Put the updated safe dictionary back
+
+                // Validate before saving
+                BOOL isValid = [NSPropertyListSerialization propertyList:activeTasks
+                                                     isValidForFormat:NSPropertyListBinaryFormat_v1_0];
+
+                if (isValid) {
+                    [defaults setObject:activeTasks forKey:@"ArcoScribeActiveTasks"];
+                    [defaults synchronize];
+                    NSLog(@"[BackgroundTransferManager] Updated status for task %@ to: %@", taskId, status);
+                } else {
+                    NSLog(@"[BackgroundTransferManager] Warning: Failed to validate active tasks dictionary during status update for task %@. Update skipped.", taskId);
+                     // Consider logging the problematic dictionary structure
+                }
+            } else {
+                 NSLog(@"[BackgroundTransferManager] Warning: Could not create mutable copy of task info for task %@ during status update.", taskId);
+            }
+        } else {
+            NSLog(@"[BackgroundTransferManager] Warning: Task %@ not found in persistence for status update.", taskId);
+        }
+    }
+}
+
+// New helper method to safely remove a task from persistence
+- (void)safelyRemoveTask:(NSString *)taskId {
+    @synchronized(self) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSMutableDictionary *activeTasks = [[defaults objectForKey:@"ArcoScribeActiveTasks"] mutableCopy];
+
+        if (activeTasks && activeTasks[taskId]) {
+            [activeTasks removeObjectForKey:taskId];
+
+            // Validate before saving
+            BOOL isValid = [NSPropertyListSerialization propertyList:activeTasks
+                                                 isValidForFormat:NSPropertyListBinaryFormat_v1_0];
+
+            if (isValid) {
+                [defaults setObject:activeTasks forKey:@"ArcoScribeActiveTasks"];
+                [defaults synchronize];
+                NSLog(@"[BackgroundTransferManager] Removed task %@ from persistence.", taskId);
+            } else {
+                NSLog(@"[BackgroundTransferManager] Warning: Failed to validate active tasks dictionary during task removal for task %@. Update skipped.", taskId);
+                // Consider logging the problematic dictionary structure
+            }
+        } else {
+            NSLog(@"[BackgroundTransferManager] Warning: Task %@ not found in persistence for removal.", taskId);
         }
     }
 }
@@ -105,7 +173,7 @@ static BackgroundTransferManager *sharedInstance = nil;
         // Ensure background identifier is unique
         NSString *backgroundIdentifier = [NSString stringWithFormat:@"%@.backgroundtransfer", [[NSBundle mainBundle] bundleIdentifier]];
         NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:backgroundIdentifier];
-        config.discretionary = YES;
+        config.discretionary = NO; // Encourage more immediate background execution
         config.sessionSendsLaunchEvents = YES;
 
         // Create the session using the singleton instance as the delegate
@@ -397,6 +465,10 @@ RCT_EXPORT_METHOD(startUploadTask:(NSDictionary *)taskInfo
         NSLog(@"[BackgroundTransferManager] Error domain: %@, code: %ld", error.domain, (long)error.code);
         NSLog(@"[BackgroundTransferManager] Error user info: %@", error.userInfo);
 
+        // --- Persist Error Status ---
+        [self safelyUpdateTaskStatus:@"error" forTaskId:taskId]; 
+        // --- End Persist Error Status ---
+
         // Create a safe error dictionary for React Native
         NSDictionary *safeErrorInfo = @{
             @"taskId": taskId,
@@ -426,6 +498,11 @@ RCT_EXPORT_METHOD(startUploadTask:(NSDictionary *)taskInfo
 
              if (statusCode >= 200 && statusCode < 300) {
                  NSLog(@"[BackgroundTransferManager] Upload Task %@ completed successfully (Status %ld).", taskId, (long)statusCode);
+                 
+                 // --- Persist Complete Status ---
+                 [self safelyUpdateTaskStatus:@"complete" forTaskId:taskId];
+                 // --- End Persist Complete Status ---
+
                  // Create a safe dictionary for React Native
                  NSDictionary *safeResponseInfo = @{
                      @"taskId": taskId,
@@ -441,6 +518,10 @@ RCT_EXPORT_METHOD(startUploadTask:(NSDictionary *)taskInfo
                 NSLog(@"[BackgroundTransferManager] Upload Task %@ failed with HTTP Status %ld.", taskId, (long)statusCode);
                 NSString *errorMessage = [NSString stringWithFormat:@"HTTP Error: %ld - %@", (long)statusCode, responseString];
                 
+                // --- Persist Error Status (HTTP Error) ---
+                [self safelyUpdateTaskStatus:@"error" forTaskId:taskId];
+                // --- End Persist Error Status ---
+
                 // Create a safe error dictionary for React Native
                 NSDictionary *safeErrorInfo = @{
                     @"taskId": taskId,
@@ -583,6 +664,143 @@ RCT_EXPORT_METHOD(clearTask:(NSString *)taskId
       resolve(@(NO)); // Indicate task was not found, but not necessarily an error
     }
   }
+}
+
+// Attempt to deserialize the data, handle corruption
+static NSDictionary* safelyDeserializePlist(NSData* data, NSString* key) {
+    if (!data) return nil;
+    NSError *error = nil;
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                         options:NSPropertyListImmutable
+                                                          format:NULL
+                                                           error:&error];
+    
+    if (error || ![plist isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[BackgroundTransferManager] Warning: Corrupted data detected for key '%@'. Discarding.", key);
+        // Optionally remove the corrupted data from defaults
+        // [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+        // [[NSUserDefaults standardUserDefaults] synchronize];
+        return nil;
+    }
+    return (NSDictionary *)plist;
+}
+
+// Handle completed background tasks
+- (void)handleTaskCompletion:(NSURLSessionTask *)task withError:(NSError *)error {
+    NSString *taskId = task.taskDescription;
+    if (!taskId) {
+        NSLog(@"[BackgroundTransferManager] Task completed without a taskId.");
+        return;
+    }
+
+    NSDictionary *callbackInfo = self.taskCallbacks[taskId];
+    NSString *taskType = callbackInfo[@"taskType"] ?: @"unknown";
+    NSString *recordingId = callbackInfo[@"recordingId"] ?: @"unknown";
+    NSString *tempFilePath = callbackInfo[@"tempFilePath"]; // Path to the temporary file we created
+
+    // Always clean up the temporary request body file
+    if (tempFilePath && [[NSFileManager defaultManager] fileExistsAtPath:tempFilePath]) {
+        NSError *removeError;
+        [[NSFileManager defaultManager] removeItemAtPath:tempFilePath error:&removeError];
+        if (removeError) {
+             NSLog(@"[BackgroundTransferManager] Error removing temporary file %@: %@", tempFilePath, removeError);
+        } else {
+             NSLog(@"[BackgroundTransferManager] Cleaned up temporary file: %@", tempFilePath);
+        }
+    }
+
+    // Clean up NSUserDefaults entry using the helper
+    [self safelyRemoveTask:taskId];
+    
+    // Clean up local callback dictionaries
+    @synchronized(self) {
+        [self.taskCallbacks removeObjectForKey:taskId];
+        [self.taskData removeObjectForKey:taskId];
+    }
+
+    if (error) {
+        // Handle network or session errors
+        NSLog(@"[BackgroundTransferManager] Task %@ (%@ for %@) failed: %@", taskId, taskType, recordingId, error);
+        NSDictionary *errorBody = @{
+            @"taskId": taskId,
+            @"taskType": taskType,
+            @"recordingId": recordingId,
+            @"message": error.localizedDescription ?: @"Background task failed"
+        };
+        // Dispatch event emission to main queue
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self sendEventWithName:@"onTransferError" body:errorBody];
+        });
+    } else {
+        // Handle HTTP errors and successful responses
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
+        NSInteger statusCode = httpResponse.statusCode;
+        NSData *responseData = self.taskData[taskId];
+        // Note: Don't remove responseData from self.taskData here yet, let cleanup handle it.
+        
+        NSString *responseString = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+        NSLog(@"[BackgroundTransferManager] Task %@ completed with status code %ld", taskId, (long)statusCode);
+        // Uncomment for full response logging:
+        // NSLog(@"[BackgroundTransferManager] Task %@ response body: %@", taskId, responseString);
+
+        if (statusCode >= 200 && statusCode < 300) {
+            // Successful HTTP response
+            NSLog(@"[BackgroundTransferManager] Task %@ (%@ for %@) completed successfully.", taskId, taskType, recordingId);
+            NSDictionary *successBody = @{
+                @"taskId": taskId,
+                @"taskType": taskType,
+                @"recordingId": recordingId,
+                @"response": responseString ?: @""
+            };
+             // Dispatch event emission to main queue
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self sendEventWithName:@"onTransferComplete" body:successBody];
+            });
+        } else {
+            // HTTP error (non-2xx status code)
+            NSLog(@"[BackgroundTransferManager] Task %@ (%@ for %@) failed with HTTP status %ld", taskId, taskType, recordingId, (long)statusCode);
+            NSDictionary *errorBody = @{
+                @"taskId": taskId,
+                @"taskType": taskType,
+                @"recordingId": recordingId,
+                @"message": [NSString stringWithFormat:@"HTTP Error: %ld", (long)statusCode],
+                @"response": responseString ?: @""
+            };
+            // Dispatch event emission to main queue
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self sendEventWithName:@"onTransferError" body:errorBody];
+            });
+        }
+    }
+    
+    // No need to call the completion handler here anymore, the Swift store manages it.
+}
+
+// Method to save application state to NSUserDefaults
+- (void)saveApplicationState {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *appState = [NSMutableDictionary dictionary];
+    // Example: Save the state of active tasks
+    appState[@"activeTasks"] = self.taskCallbacks;
+    // Add other state information as needed
+//    NSData *plistData = [NSPropertyListSerialization dataWithPropertyList:appState options:NSPropertyListXMLFormat_v1_0 error:nil];
+    [defaults setObject:appState forKey:@"AppStateData"];
+    [defaults synchronize];
+    NSLog(@"[BackgroundTransferManager] Application state saved.");
+}
+
+// Method to restore application state from NSUserDefaults
+- (void)restoreApplicationState {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary *appState = [defaults objectForKey:@"AppStateData"];
+    if (appState) {
+        // Example: Restore active tasks state
+        self.taskCallbacks = [appState[@"activeTasks"] mutableCopy];
+        // Restore other state information as needed
+        NSLog(@"[BackgroundTransferManager] Application state restored.");
+    } else {
+        NSLog(@"[BackgroundTransferManager] No saved application state found.");
+    }
 }
 
 @end
