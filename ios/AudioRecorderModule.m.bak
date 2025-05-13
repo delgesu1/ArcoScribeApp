@@ -12,28 +12,19 @@ NSNotificationName const AudioRecordingDidStopNotification = @"AudioRecordingDid
 static const unsigned long long MINIMUM_REQUIRED_DISK_SPACE = 100 * 1024 * 1024;
 
 @interface AudioRecorderModule () <AVAudioRecorderDelegate>
-// Redeclare readonly properties from .h as readwrite for internal mutation
+// Redeclare properties from .h as readwrite for internal modification
 @property (nonatomic, strong, readwrite) AVAudioRecorder *audioRecorder;
-@property (nonatomic, assign, readwrite) BOOL isPaused;
-@property (nonatomic, strong, readwrite) NSMutableArray *recordingSegments;
 @property (nonatomic, assign, readwrite) NSTimeInterval currentRecordingDuration;
 @property (nonatomic, strong, readwrite) NSString *currentRecordingFilePath;
 @property (nonatomic, strong, readwrite) NSString *currentRecordingId;
+@property (nonatomic, assign, readwrite) BOOL isPaused;
+@property (nonatomic, strong, readwrite) NSMutableArray *recordingSegments;
 @property (nonatomic, assign, readwrite) NSTimeInterval totalDurationOfCompletedSegmentsSoFar;
+@property (nonatomic, assign, readwrite) SegmentStopReason currentStopReason;
 @property (nonatomic, assign, readwrite) UIBackgroundTaskIdentifier segmentTransitionBackgroundTaskID;
 @property (nonatomic, strong, readwrite) dispatch_queue_t eventDispatchQueue;
 @property (nonatomic, assign, readwrite) PauseOrigin currentPauseOrigin;
-@property (nonatomic, assign, readwrite) SegmentStopReason currentStopReason;
-
-// Do not redeclare properties that are already readwrite in the .h file:
-// - totalPauseDuration
-// - maxSegmentDuration
-// - isRecording
-// - durationAtSegmentStart
-// - durationOfSegmentBeforeStop
-// - recordingStartTime
-// - pauseStartTime
-// - recordingTimer
+@property (nonatomic, assign, readwrite) NSTimeInterval maxSegmentDuration; // Redeclare as readwrite
 
 // Private helper methods for app lifecycle
 - (void)registerAppLifecycleNotifications;
@@ -110,6 +101,7 @@ RCT_EXPORT_MODULE();
         @"onRecordingProgress",
         @"onRecordingFinished",
         @"onRecordingError",
+        @"onRecordingSegmentComplete",
         @"onRecordingUpdate"
     ];
 }
@@ -436,7 +428,6 @@ RCT_EXPORT_MODULE();
         });
     }
     */
-}
 
 - (void)audioRecorderDidFinishRecording:(AVAudioRecorder *)recorder successfully:(BOOL)flag
 {
@@ -457,15 +448,9 @@ RCT_EXPORT_MODULE();
         
         // Get segment duration - use pre-captured duration if this was an API-initiated stop
         // otherwise use the recorder's current time (which may be 0 if already stopped)
-        NSTimeInterval segmentDuration = 0;
-        if (reasonForStop == SegmentStopReasonApiStop || reasonForStop == SegmentStopReasonManual) {
-            segmentDuration = strongSelfForBlock.durationOfSegmentBeforeStop;
-        } else {
-            // Timed or implicit stop – recorder.currentTime is already 0, so compute based on timestamp
-            segmentDuration = CACurrentMediaTime() - strongSelfForBlock.durationAtSegmentStart;
-        }
-        
-        if (segmentDuration < 0) segmentDuration = 0; // Safety
+        NSTimeInterval segmentDuration = (reasonForStop == SegmentStopReasonApiStop || reasonForStop == SegmentStopReasonManual) 
+            ? strongSelfForBlock.durationOfSegmentBeforeStop 
+            : recorder.currentTime;
         
         // The recorder path (current segment)
         NSString *segmentPath = recorder.url.path;
@@ -495,16 +480,13 @@ RCT_EXPORT_MODULE();
             strongSelfForBlock.currentRecordingDuration = strongSelfForBlock.totalDurationOfCompletedSegmentsSoFar;
             strongSelfForBlock.totalPauseDuration = 0;
             
-            // Capture the ID now, in case resetRecordingState clears it later
-            NSString *idForEvents = [strongSelfForBlock.currentRecordingId copy];
-            
             // Emit segment completion event
             if (strongSelfForBlock->hasListeners) {
                 dispatch_async(strongSelfForBlock.eventDispatchQueue, ^{
                     AudioRecorderModule *strongSelfForBlock = strongSelf;
                     if (!strongSelfForBlock) return;
                     [strongSelfForBlock sendEventWithName:@"onRecordingSegmentComplete" body:@{
-                        @"recordingId": idForEvents ?: @"",
+                        @"recordingId": strongSelfForBlock.currentRecordingId ?: @"",
                         @"segmentPath": segmentPath ?: @"",
                         @"segmentNumber": @(strongSelfForBlock.recordingSegments.count), // This is now the count of *completed* segments
                         @"duration": @(segmentDuration)
@@ -548,21 +530,15 @@ RCT_EXPORT_MODULE();
                         if (!eventSelf) return;
                         
                         [eventSelf sendEventWithName:@"onRecordingFinished" body:@{
-                            @"recordingId": idForEvents ?: @"",
+                            @"recordingId": eventSelf.currentRecordingId ?: @"",
                             @"status": @"completed",
-                            @"segmentCount": @(eventSelf.recordingSegments.count),
-                            @"segmentPaths": [eventSelf.recordingSegments copy],
-                            @"duration": @(eventSelf.totalDurationOfCompletedSegmentsSoFar)
+                            @"segmentCount": @(eventSelf.recordingSegments.count)
                         }];
                     });
                 }
                 
-                // Defer state reset until after events have been dispatched
-                dispatch_async(strongSelfForBlock.eventDispatchQueue, ^{
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [strongSelfForBlock resetRecordingState];
-                    });
-                });
+                // Reset recording state for next time
+                [strongSelfForBlock resetRecordingState];
             }
             
             // Always clear the delegate and nil out the recorder instance that just finished
@@ -630,8 +606,6 @@ RCT_EXPORT_MODULE();
         return NO;
     }
     self.audioRecorder.delegate = self;
-    [self.audioRecorder setMeteringEnabled:YES];
-    self.durationAtSegmentStart = CACurrentMediaTime();
     [self.audioRecorder prepareToRecord];
     
     if ([self.audioRecorder recordForDuration:self.maxSegmentDuration]) {
@@ -642,7 +616,22 @@ RCT_EXPORT_MODULE();
         self.currentStopReason = SegmentStopReasonNone;
         self.isPaused = NO;
         self.isRecording = YES;
+        self.durationAtSegmentStart = CACurrentMediaTime();
         [self startRecordingTimer];
+        
+        // Emit event for new segment started
+        if (self->hasListeners) {
+            dispatch_async(self.eventDispatchQueue, ^{
+                AudioRecorderModule *eventSelf = self;
+                if (!eventSelf) return;
+                [eventSelf sendEventWithName:@"onRecordingSegmentStart" body:@{
+                    @"recordingId": eventSelf.currentRecordingId ?: @"",
+                    @"segmentPath": nextSegmentFilePath ?: @"",
+                    @"segmentNumber": @(eventSelf.recordingSegments.count + 1),
+                    @"elapsedTime": @(eventSelf.totalDurationOfCompletedSegmentsSoFar)
+                }];
+            });
+        }
         
         if (self.segmentTransitionBackgroundTaskID != UIBackgroundTaskInvalid) {
             RCTLogInfo(@"[AudioRecorderModule] Ending background task successfully: %lu", (unsigned long)self.segmentTransitionBackgroundTaskID);
@@ -666,7 +655,12 @@ RCT_EXPORT_MODULE();
         [self handleCriticalRecordingErrorAndStop:@"Failed to start recording next segment."];
         return NO;
     }
-
+    } else {
+        // Recording failed for the current segment
+        RCTLogError(@"[AudioRecorderModule] audioRecorderDidFinishRecording received failure flag.");
+        strongSelf.currentStopReason = SegmentStopReasonFailed;
+        [strongSelf handleCriticalRecordingErrorAndStop:@"Recording failed for segment."];
+    }
 }
 
 - (void)audioRecorderEncodeErrorDidOccur:(AVAudioRecorder *)recorder error:(NSError *)error
@@ -712,7 +706,6 @@ RCT_EXPORT_MODULE();
     
     self.audioRecorder.delegate = self;
     [self.audioRecorder setMeteringEnabled:YES];
-    self.durationAtSegmentStart = CACurrentMediaTime();
     RCTLogInfo(@"[AudioRecorderModule] startRecordingInternal: Preparing to record...");
     
     // Start recording for the specified segment duration
@@ -738,6 +731,7 @@ RCT_EXPORT_MODULE();
     self.totalPauseDuration = 0;
     self.isPaused = NO;
     self.currentRecordingDuration = 0;
+    // self.durationAtSegmentStart = CACurrentMediaTime(); // Initialize for the first segment
     
     // New initializations for segmentation logic
     self.totalDurationOfCompletedSegmentsSoFar = 0.0;
@@ -837,9 +831,13 @@ RCT_EXPORT_MODULE();
         RCTLogInfo(@"[AudioRecorderModule] Before stopping, currentTime: %f, filePath: %@", 
                   self.durationOfSegmentBeforeStop, segmentPath);
         
-        // No longer pre-emptively adding the segment here.
-        // The delegate (audioRecorderDidFinishRecording) will add it once and only once.
-        // We still capture durationOfSegmentBeforeStop for the delegate to use.
+        // If we still need to add this segment to our tracking array
+        if (segmentPath && ![self.recordingSegments containsObject:segmentPath]) {
+            [self.recordingSegments addObject:segmentPath];
+            self.totalDurationOfCompletedSegmentsSoFar += self.durationOfSegmentBeforeStop;
+            RCTLogInfo(@"[AudioRecorderModule] Added final segment before stopping. Total duration: %f", 
+                      self.totalDurationOfCompletedSegmentsSoFar);
+        }
         
         // Now stop the recorder which will trigger audioRecorderDidFinishRecording
         [self.audioRecorder stop];
@@ -870,8 +868,6 @@ RCT_EXPORT_MODULE();
 }
 
 #pragma mark - Exported Methods
-
-RCT_EXTERN_METHOD(configureSessionForPlayback)
 
 RCT_EXPORT_METHOD(setMaxSegmentDuration:(NSTimeInterval)duration)
 {
@@ -1028,29 +1024,16 @@ RCT_EXPORT_METHOD(stopRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPro
     // Get current state of recording segments before stopping
     // This will be used to resolve the promise immediately
     NSArray *segmentPaths = [strongSelf.recordingSegments copy];
-    
-    // When we're still holding an AVAudioRecorder, one *more* segment
-    // is in progress but not yet inside `recordingSegments`.
-    BOOL willFinishCurrentSegment = (strongSelf.audioRecorder != nil);
-    NSUInteger pendingCount       = segmentPaths.count + (willFinishCurrentSegment ? 1 : 0);
-    
-    // Get the first path - either current recording or first in completed segments
-    NSString *firstPath = strongSelf.currentRecordingFilePath ?: segmentPaths.firstObject;
-    
-    // Same idea for duration: add the recorder's running time if needed
-    NSTimeInterval totalDuration  = strongSelf.totalDurationOfCompletedSegmentsSoFar +
-                                    (willFinishCurrentSegment ? strongSelf.audioRecorder.currentTime : 0);
+    NSTimeInterval totalDuration = strongSelf.totalDurationOfCompletedSegmentsSoFar;
     NSString *recordingId = [strongSelf.currentRecordingId copy];
     
-    // Create a result to return to the JS thread immediately
-    // Include essential path data for playback and upload while keeping payload small
+    // Create a minimal result to return to the JS thread immediately
+    // NOTE: We now return MINIMAL data to prevent React Native bridge congestion
     NSDictionary *earlyResult = @{
         @"success": @YES,
         @"recordingId": recordingId ?: @"",
         @"duration": @(totalDuration),
-        @"segmentCount": @(pendingCount),       // accurate, never zero in normal cases
-        @"firstSegmentPath": firstPath ?: @"",
-        @"segmentPaths": [segmentPaths copy], // Include full array
+        @"segmentCount": @(segmentPaths.count), // Only send count, not the full array
         @"status": @"processing"
     };
     
@@ -1081,7 +1064,7 @@ RCT_EXPORT_METHOD(stopRecording:(RCTPromiseResolveBlock)resolve rejecter:(RCTPro
                 AudioRecorderModule *strongSelfForBlock = strongSelf;
                 if (!strongSelfForBlock) return;
                 
-                [strongSelfForBlock sendEventWithName:@"onRecordingUpdate" body:earlyResult];
+                [strongSelfForBlock sendEventWithName:@"onRecordingProcessing" body:earlyResult];
             });
         }
     });
@@ -1490,31 +1473,6 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
     
     RCTLogInfo(@"[AudioRecorderModule] Generated filename: %@", filename);
     return [folderPath stringByAppendingPathComponent:filename];
-}
-
-- (void)configureSessionForPlayback
-{
-    RCTLogInfo(@"[AudioRecorderModule] Configuring audio session for playback.");
-    NSError *error = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    
-    // Deactivate first to allow category change
-    if (![session setActive:NO error:&error]) {
-        RCTLogWarn(@"[AudioRecorderModule] Failed to deactivate session for category change: %@", error.localizedDescription);
-    }
-    
-    // Set category to Playback without any options
-    if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
-        RCTLogError(@"[AudioRecorderModule] Failed to set audio session category to Playback: %@", error.localizedDescription);
-        return;
-    }
-    
-    // Reactivate the session
-    if (![session setActive:YES error:&error]) {
-        RCTLogError(@"[AudioRecorderModule] Failed to activate audio session for playback: %@", error.localizedDescription);
-    } else {
-        RCTLogInfo(@"[AudioRecorderModule] Audio session successfully configured for playback.");
-    }
 }
 
 @end

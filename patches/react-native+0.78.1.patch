@@ -1,0 +1,19 @@
+diff --git a/node_modules/react-native/.DS_Store b/node_modules/react-native/.DS_Store
+new file mode 100644
+index 0000000..6a806bc
+Binary files /dev/null and b/node_modules/react-native/.DS_Store differ
+diff --git a/node_modules/react-native/scripts/.DS_Store b/node_modules/react-native/scripts/.DS_Store
+new file mode 100644
+index 0000000..93ef0ca
+Binary files /dev/null and b/node_modules/react-native/scripts/.DS_Store differ
+diff --git a/node_modules/react-native/scripts/xcode/with-environment.sh b/node_modules/react-native/scripts/xcode/with-environment.sh
+index c6bd62c..906f9f2 100755
+--- a/node_modules/react-native/scripts/xcode/with-environment.sh
++++ b/node_modules/react-native/scripts/xcode/with-environment.sh
+@@ -43,5 +43,5 @@ fi
+ 
+ # Execute argument, if present
+ if [ -n "$1" ]; then
+-  $1
++  exec "$1" "$@"
+ fi

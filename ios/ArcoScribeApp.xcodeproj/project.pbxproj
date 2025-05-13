@@ -11,29 +11,29 @@
 		1EFFDAAFBCBBCAF68F0F1344 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
-		849F2EE9D5D484E6F4E58130 /* libPods-ArcoScribeApp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D0783D19E23B306B16B16339 /* libPods-ArcoScribeApp.a */; };
 		DA4D40DF2DA4C598004A3EFF /* AudioRecorderModule.m in Sources */ = {isa = PBXBuildFile; fileRef = DA4D40DE2DA4C598004A3EFF /* AudioRecorderModule.m */; };
 		DAFB703E2D9A89CF0033FB7E /* BackgroundTransferManager.m in Sources */ = {isa = PBXBuildFile; fileRef = DAFB703D2D9A89CF0033FB7E /* BackgroundTransferManager.m */; };
 		DAFB70422D9A8C460033FB7E /* File.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFB70412D9A8C460033FB7E /* File.swift */; };
+		FB6DAB55BC64169B93B917C8 /* libPods-ArcoScribeApp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F8AB47487F7CE40E6E2BA5E1 /* libPods-ArcoScribeApp.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0A40D86413DA9C3F7EA637A9 /* Pods-ArcoScribeApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ArcoScribeApp.debug.xcconfig"; path = "Target Support Files/Pods-ArcoScribeApp/Pods-ArcoScribeApp.debug.xcconfig"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* ArcoScribeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArcoScribeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = ArcoScribeApp/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = ArcoScribeApp/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = ArcoScribeApp/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		5CBD98567C616AF579712E72 /* Pods-ArcoScribeApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ArcoScribeApp.debug.xcconfig"; path = "Target Support Files/Pods-ArcoScribeApp/Pods-ArcoScribeApp.debug.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ArcoScribeApp/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ArcoScribeApp/LaunchScreen.storyboard; sourceTree = "<group>"; };
-		D0783D19E23B306B16B16339 /* libPods-ArcoScribeApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ArcoScribeApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA4D40DD2DA4C598004A3EFF /* AudioRecorderModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AudioRecorderModule.h; sourceTree = "<group>"; };
 		DA4D40DE2DA4C598004A3EFF /* AudioRecorderModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AudioRecorderModule.m; sourceTree = "<group>"; };
 		DAFB703C2D9A897A0033FB7E /* BackgroundTransferManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BackgroundTransferManager.h; sourceTree = "<group>"; };
 		DAFB703D2D9A89CF0033FB7E /* BackgroundTransferManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BackgroundTransferManager.m; sourceTree = "<group>"; };
 		DAFB70412D9A8C460033FB7E /* File.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = File.swift; sourceTree = "<group>"; };
 		DAFB70432D9A8D3F0033FB7E /* ArcoScribeApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ArcoScribeApp-Bridging-Header.h"; sourceTree = "<group>"; };
-		E3A4B168245F0A39DB307393 /* Pods-ArcoScribeApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ArcoScribeApp.release.xcconfig"; path = "Target Support Files/Pods-ArcoScribeApp/Pods-ArcoScribeApp.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		EE82BBE0DA4F0D55571C9855 /* Pods-ArcoScribeApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ArcoScribeApp.release.xcconfig"; path = "Target Support Files/Pods-ArcoScribeApp/Pods-ArcoScribeApp.release.xcconfig"; sourceTree = "<group>"; };
+		F8AB47487F7CE40E6E2BA5E1 /* libPods-ArcoScribeApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ArcoScribeApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -41,7 +41,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				849F2EE9D5D484E6F4E58130 /* libPods-ArcoScribeApp.a in Frameworks */,
+				FB6DAB55BC64169B93B917C8 /* libPods-ArcoScribeApp.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +70,7 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				D0783D19E23B306B16B16339 /* libPods-ArcoScribeApp.a */,
+				F8AB47487F7CE40E6E2BA5E1 /* libPods-ArcoScribeApp.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -107,8 +107,8 @@
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				0A40D86413DA9C3F7EA637A9 /* Pods-ArcoScribeApp.debug.xcconfig */,
-				E3A4B168245F0A39DB307393 /* Pods-ArcoScribeApp.release.xcconfig */,
+				5CBD98567C616AF579712E72 /* Pods-ArcoScribeApp.debug.xcconfig */,
+				EE82BBE0DA4F0D55571C9855 /* Pods-ArcoScribeApp.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -120,13 +120,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "ArcoScribeApp" */;
 			buildPhases = (
-				6027E8F6FF73F726D785CF18 /* [CP] Check Pods Manifest.lock */,
+				022C6600D83D9B06E70D38D4 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
-				D48D59FC99EE8BDFEB2D8B98 /* [CP] Embed Pods Frameworks */,
-				6F126C0BDB0E939DF3CF4B51 /* [CP] Copy Pods Resources */,
+				4F8F119B9AEC812B46A6A75B /* [CP] Embed Pods Frameworks */,
+				3F5DAACA0BF2E8D3554AC129 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -196,9 +196,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n\nWITH_ENVIRONMENT=\"$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"$REACT_NATIVE_PATH/scripts/react-native-xcode.sh\"\n\n/bin/sh -c \"$WITH_ENVIRONMENT $REACT_NATIVE_XCODE\"\n";
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\nset -e\n\nWITH_ENVIRONMENT=\"$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"$REACT_NATIVE_PATH/scripts/react-native-xcode.sh\"\n\n# Explicitly set the entry file relative to the ios directory\nexport ENTRY_FILE=\"${PROJECT_DIR}/../index.js\"\n\n# Execute the bundler script\n\"$WITH_ENVIRONMENT\" \"$REACT_NATIVE_XCODE\"\n";
 		};
-		6027E8F6FF73F726D785CF18 /* [CP] Check Pods Manifest.lock */ = {
+		022C6600D83D9B06E70D38D4 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -220,7 +220,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		6F126C0BDB0E939DF3CF4B51 /* [CP] Copy Pods Resources */ = {
+		3F5DAACA0BF2E8D3554AC129 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -237,7 +237,7 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-ArcoScribeApp/Pods-ArcoScribeApp-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		D48D59FC99EE8BDFEB2D8B98 /* [CP] Embed Pods Frameworks */ = {
+		4F8F119B9AEC812B46A6A75B /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -273,7 +273,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 0A40D86413DA9C3F7EA637A9 /* Pods-ArcoScribeApp.debug.xcconfig */;
+			baseConfigurationReference = 5CBD98567C616AF579712E72 /* Pods-ArcoScribeApp.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -302,7 +302,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = E3A4B168245F0A39DB307393 /* Pods-ArcoScribeApp.release.xcconfig */;
+			baseConfigurationReference = EE82BBE0DA4F0D55571C9855 /* Pods-ArcoScribeApp.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -407,10 +407,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
@@ -491,10 +488,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = "ArcoScribeApp-Bridging-Header.h";

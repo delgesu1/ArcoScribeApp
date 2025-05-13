@@ -7,9 +7,12 @@ ArcoScribeApp is designed to assist violin students and teachers by recording le
 ## Key Features & Workflow
 
 1.  **Audio Recording**:
-    *   Users can record audio directly within the app using the device microphone.
-    *   Recordings are saved locally to the device's storage.
-    *   Basic metadata (date, duration, etc.) is stored alongside the audio file.
+    *   The app features a custom native iOS module (`AudioRecorderModule`) for robust and reliable audio recording.
+    *   Supports long-duration recordings (e.g., 1+ hours), even when the app is backgrounded or the device is locked. This is achieved by leveraging iOS's "audio" background mode and direct `AVAudioSession` management.
+    *   Automatically segments long recordings into manageable chunks (e.g., 15-minute configurable duration) to prevent data loss and improve stability. Each segment is properly finalized before a new one begins.
+    *   Gracefully handles system events such as audio session interruptions (e.g., phone calls), app backgrounding/foregrounding, and route changes.
+    *   Manages microphone permissions and checks for sufficient disk space before and during the recording process to prevent errors.
+    *   Recordings are saved locally to the device's storage with detailed metadata, including paths to individual segments.
 
 2.  **Transcription Process**:
     *   Users can initiate transcription for a selected recording.
@@ -33,18 +36,24 @@ ArcoScribeApp is designed to assist violin students and teachers by recording le
 
 ## Background Processing Capabilities
 
-A core feature is the robust background processing pipeline:
+A core feature is the robust background processing pipeline, encompassing both audio capture and data uploads:
 
-*   **iOS Background Transfers**: Leverages `NSURLSession` with background configurations, allowing network tasks (uploads to ElevenLabs and OpenAI) to continue reliably even when the app is not in the foreground or the device is asleep.
-*   **Task Persistence**: Uses `NSUserDefaults` to store information about active background tasks. This allows the app to recover and manage tasks even after being terminated or relaunched.
-*   **Event Handling**: Native iOS code communicates back to React Native via `NativeEventEmitter`, ensuring events are dispatched on the main thread for UI updates and further actions (like triggering summarization).
-*   **Reliability**: Implemented thread safety (`@synchronized`) and data validation (`NSPropertyListSerialization`) for `NSUserDefaults` access to prevent crashes and data corruption.
+*   **Background Audio Recording**:
+    *   The `AudioRecorderModule` ensures continuous audio capture when the app is backgrounded. It achieves this by correctly configuring and managing the `AVAudioSession` with the "audio" background mode, which signals to iOS that the app is actively using audio input.
+    *   This mechanism is designed for persistent audio capture and is distinct from the background task execution used for network operations.
+
+*   **Background Network Transfers (Uploads)**:
+    *   Leverages `NSURLSession` with background configurations via the `BackgroundTransferManager` module. This allows network tasks (uploads of audio files to ElevenLabs for transcription and transcripts to OpenAI for summarization) to continue reliably even when the app is not in the foreground or the device is asleep.
+    *   **Task Persistence**: Uses `NSUserDefaults` to store information about active background upload tasks. This allows the app to recover and manage these tasks even after being terminated or relaunched.
+    *   **Event Handling**: Native iOS code for `BackgroundTransferManager` communicates back to React Native via `NativeEventEmitter`, ensuring events are dispatched on the main thread for UI updates and further actions (like triggering summarization).
+    *   **Reliability**: Implemented thread safety (`@synchronized`) and data validation (`NSPropertyListSerialization`) for `NSUserDefaults` access related to upload tasks to prevent crashes and data corruption.
 
 ## Technology Stack
 
 *   **Frontend**: React Native
-*   **Native Modules (iOS)**: Objective-C (for `BackgroundTransferManager`)
-*   **Background Networking (iOS)**: `NSURLSession` (background configuration)
+*   **Native Modules (iOS)**: Objective-C (for `AudioRecorderModule` and `BackgroundTransferManager`)
+*   **Audio Recording (iOS Native)**: `AVAudioSession`, `AVAudioRecorder` (managed by `AudioRecorderModule`)
+*   **Background Networking (iOS for Uploads)**: `NSURLSession` (background configuration, managed by `BackgroundTransferManager`)
 *   **Local Data Storage**: Async Storage (or similar for recording metadata/status), device file system (for audio files).
 *   **Task Persistence (iOS)**: `NSUserDefaults`
 *   **Transcription API**: ElevenLabs Scribe Speech-to-text

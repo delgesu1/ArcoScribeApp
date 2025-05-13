@@ -117,10 +117,12 @@ class BackgroundTransferService {
         console.log(`[BackgroundTransferService] Temporary concatenation path: ${tempConcatPath}`);
 
         // Call the native concatenation method
-        uploadFilePath = await AudioRecorderModule.concatenateSegments(
+        const concatResult = await AudioRecorderModule.concatenateSegments(
           recording.segmentPaths,
           tempConcatPath
         );
+        // The native method returns an object { success, outputPath }
+        uploadFilePath = concatResult?.outputPath || tempConcatPath;
         console.log(`[BackgroundTransferService] Concatenation complete. Uploading: ${uploadFilePath}`);
 
         // Store temp path in recording temporarily for cleanup later

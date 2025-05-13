@@ -48,11 +48,26 @@ const setupEventListeners = () => {
     // Recording finished
     audioRecorderEvents.addListener('onRecordingFinished', (data) => {
       console.log('[AudioRecordingService] Recording finished:', data);
+      
+      // Save segment paths for potential use in playback/transcription
+      if (data.segmentPaths && data.segmentPaths.length > 0) {
+        currentSegmentPaths = [...data.segmentPaths];
+      }
     }),
     
     // Recording errors
     audioRecorderEvents.addListener('onRecordingError', (error) => {
       console.error('[AudioRecordingService] Recording error:', error);
+    }),
+    
+    // Recording update events (status updates, processing notifications, etc.)
+    audioRecorderEvents.addListener('onRecordingUpdate', (data) => {
+      console.log('[AudioRecordingService] Recording update:', data);
+      // Handle different status updates
+      if (data.status === 'processing') {
+        // Handle processing status (previously came from onRecordingProcessing event)
+        console.log('[AudioRecordingService] Recording is being processed');
+      }
     })
   ];
 };
@@ -377,25 +392,34 @@ export const stopRecording = async () => {
     
     // Stop recording using native module
     const result = await AudioRecorderModule.stopRecording();
-    console.log('Stop result:', result);
+    console.log('Stop result received from native:', result); // Keep a simpler log
+
+    // Directly use the first segment path provided by the native module
+    // This ensures we have *a* playable path immediately.
+    // Merging can be re-introduced later if needed.
+    const finalAudioPath = result.firstSegmentPath;
+    const combinedDuration = result.duration; // Use duration from native result
+
+    console.log(`[AudioRecordingService] Using finalAudioPath from native result: ${finalAudioPath}`);
     
     // Calculate duration and format it
-    const durationFormatted = formatTime(Math.floor(result.duration));
+    const durationFormatted = formatTime(Math.floor(combinedDuration));
     
     // Prepare data for updating the existing record
     const updatedData = {
        id: stoppedRecordingId,
        title: `${formatDate(stoppedRecordingStartTime)}`, // Final title
-       filePath: result.filePath, // Use the path returned from native module
+       filePath: finalAudioPath, // Use the merged file path if concatenated, otherwise the original
        date: formatDate(stoppedRecordingStartTime),
        duration: durationFormatted, // Final duration
        processingStatus: 'pending', // Final status
-       segmentPaths: result.segmentPaths || [] // Store segment paths for later (optional)
+       // Store segment paths from result for potential future use/debugging
+       segmentPaths: result.segmentPaths || (finalAudioPath ? [finalAudioPath] : []) 
     };
 
     // *** UPDATE Existing Recording Metadata ***
     await updateRecording(updatedData);
-    console.log(`[AudioRecordingService] Updated metadata for stopped recording ID: ${stoppedRecordingId}`);
+    console.log(`[AudioRecordingService] Updated metadata for stopped recording ID: ${stoppedRecordingId} with filePath: ${finalAudioPath}`);
 
     // Return the final recording object
     const finalRecording = Recording.fromJSON(updatedData);
@@ -567,58 +591,103 @@ export const deleteRecording = async (id) => {
 import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 let audioRecorderPlayer = new AudioRecorderPlayer();
 
+// Centralized playback state
+const playbackState = {
+  isPlaying: false,
+  isPaused: false,
+  currentPath: null,
+};
+
 // Play recording
 export const playRecording = async (filePath, onProgress, onFinished) => {
-  try {
-    // Check if this is a mock recording
-    if (filePath && filePath.includes('mock_recording')) {
-      console.log('Playing mock recording (simulated):', filePath);
-      // Simulate playback for mock recordings
-      if (onProgress) {
-        let pos = 0;
-        const interval = setInterval(() => {
-          pos += 100;
-          const duration = 5000; // Mock duration 5 seconds
-          onProgress({ currentPosition: pos, duration });
-          if (pos >= duration) {
-            clearInterval(interval);
-            if (onFinished) onFinished();
-          }
-        }, 100);
-      }
-      return filePath;
-    }
-    
-    // Real recording
-    // Ensure the filePath DOES have the correct prefix for the player library
-    let pathForPlayer = filePath;
-    if (!pathForPlayer.startsWith('file://')) {
-      pathForPlayer = `file://${pathForPlayer}`;
-    }
-    console.log(`Starting real playback for path: ${filePath}`);
-    console.log(`Using path with file:// prefix for player: ${pathForPlayer}`);
-    
-    const result = await audioRecorderPlayer.startPlayer(pathForPlayer);
-    console.log('Playback started:', result);
-    
-    // Add listener for progress updates
-    audioRecorderPlayer.addPlayBackListener((e) => {
-      if (onProgress) {
-        onProgress(e); // e contains {currentPosition, duration}
-      }
-      if (e.currentPosition >= e.duration) {
-        // Reached end
-        stopPlayback();
-        if (onFinished) onFinished();
-      }
-    });
-    
-    return result;
-  } catch (error) {
-    console.error('Error playing recording:', error);
-    console.error('Error details:', error.message, error.stack);
-    throw error;
+  if (!filePath) {
+    console.error('[AudioRecordingService] playRecording called with null or undefined filePath.');
+    if (onFinished) onFinished('Error: Invalid file path');
+    return;
   }
+
+  console.log(`[AudioRecordingService] Attempting to play recording: ${filePath}`);
+
+  // Configure native audio session for playback
+  try {
+    console.log('[AudioRecordingService] Configuring native audio session for playback...');
+    await AudioRecorderModule.configureSessionForPlayback();
+    console.log('[AudioRecordingService] Native audio session configured.');
+  } catch (sessionError) {
+      console.error('[AudioRecordingService] Failed to configure native audio session for playback:', sessionError);
+      // Decide if playback should still be attempted or fail here
+      if (onFinished) onFinished(`Error: Failed to configure audio session: ${sessionError.message}`);
+      return; // Stop playback attempt if session config fails
+  }
+
+  if (playbackState.isPlaying || playbackState.isPaused) {
+    console.log('[AudioRecordingService] Playback is already in progress or paused. Stopping it first.');
+    await stopPlayback();
+  }
+
+  // Check if this is a mock recording
+  if (filePath && filePath.includes('mock_recording')) {
+    console.log('Playing mock recording (simulated):', filePath);
+    // Simulate playback for mock recordings
+    if (onProgress) {
+      let pos = 0;
+      const interval = setInterval(() => {
+        pos += 100;
+        const duration = 5000; // Mock duration 5 seconds
+        onProgress({ currentPosition: pos, duration });
+        if (pos >= duration) {
+          clearInterval(interval);
+          if (onFinished) onFinished();
+        }
+      }, 100);
+    }
+    return filePath;
+  }
+  
+  // Real recording
+  // Ensure the filePath DOES have the correct prefix for the player library
+  let pathForPlayer = filePath;
+  if (!pathForPlayer.startsWith('file://')) {
+    pathForPlayer = `file://${pathForPlayer}`;
+  }
+  console.log(`Starting real playback for path: ${filePath}`);
+  console.log(`Using path with file:// prefix for player: ${pathForPlayer}`);
+  
+  // If multiple segments exist, lazily concatenate before playback to allow full-length listening
+  if (currentSegmentPaths && currentSegmentPaths.length > 1) {
+    try {
+      console.log('[AudioRecordingService] Multiple segments detected; performing on-demand concatenation');
+      const tempMergedPath = `${RNFS.CachesDirectoryPath}/merged_${Date.now()}.m4a`;
+      const concatResult = await AudioRecorderModule.concatenateSegments(currentSegmentPaths, tempMergedPath);
+      filePath = concatResult?.outputPath || tempMergedPath;
+      console.log('[AudioRecordingService] Concatenation complete, new path:', filePath);
+    } catch (mergeErr) {
+      console.error('[AudioRecordingService] Failed to concatenate segments for playback:', mergeErr);
+      // Fallback: play first segment only
+    }
+  }
+
+  const result = await audioRecorderPlayer.startPlayer(pathForPlayer);
+  console.log('Playback started:', result);
+  
+  // Update playback state
+  playbackState.isPlaying = true;
+  playbackState.isPaused = false;
+  playbackState.currentPath = filePath;
+
+  // Add listener for progress updates
+  audioRecorderPlayer.addPlayBackListener((e) => {
+    if (onProgress) {
+      onProgress(e); // e contains {currentPosition, duration}
+    }
+    if (e.currentPosition >= e.duration) {
+      // Reached end
+      stopPlayback();
+      if (onFinished) onFinished();
+    }
+  });
+  
+  return result;
 };
 
 // Pause playback
@@ -631,6 +700,9 @@ export const pausePlayback = async () => {
     }
     
     return await audioRecorderPlayer.pausePlayer();
+    // Update playback state
+    playbackState.isPlaying = false;
+    playbackState.isPaused = true;
   } catch (error) {
     console.error('Error pausing playback:', error);
     
@@ -653,6 +725,9 @@ export const resumePlayback = async () => {
     }
     
     return await audioRecorderPlayer.resumePlayer();
+    // Update playback state
+    playbackState.isPlaying = true;
+    playbackState.isPaused = false;
   } catch (error) {
     console.error('Error resuming playback:', error);
     
@@ -679,6 +754,10 @@ export const stopPlayback = async () => {
     await audioRecorderPlayer.stopPlayer();
     // Remove listener when stopping
     audioRecorderPlayer.removePlayBackListener();
+    // Reset playback state
+    playbackState.isPlaying = false;
+    playbackState.isPaused = false;
+    playbackState.currentPath = null;
     return true;
   } catch (error) {
     console.error('Error stopping playback:', error);

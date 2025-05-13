@@ -1,6 +1,23 @@
 # Audio Segmentation Refactor Progress
 
-This document tracks the progress of refactoring the audio recording segmentation logic in the ArcoScribeApp.
+## Project Context & Motivation
+
+This refactor is part of a larger effort to enhance ArcoScribeApp's audio recording capabilities, specifically to improve reliability for long-duration recordings (1+ hours), especially when the app is backgrounded or the device is locked. 
+
+The previous implementation using `react-native-audio-recorder-player` exhibited several limitations:
+- Recordings would sometimes stop prematurely when the app was backgrounded for extended periods.
+- Lack of recording segmentation posed a risk of data loss if the recording process was interrupted.
+- Insufficient `AVAudioSession` management for persistent background operation.
+- Potentially unnecessary JavaScript execution in the background, impacting battery life and stability.
+
+To address these issues, a custom native iOS module, `AudioRecorderModule`, was developed. This module provides:
+- Direct control of `AVAudioSession` with proper configuration for background audio.
+- Explicit management of `AVAudioRecorder`.
+- Automatic recording segmentation into manageable chunks.
+- Robust handling of system events (interruptions, app lifecycle) and resource constraints (disk space, permissions).
+- Optimized JavaScript interaction by leveraging native events for progress and state updates.
+
+This document (`REFACTOR_AUDIO_PROGRESS.md`) specifically tracks the detailed progress of implementing and refining the segmentation logic and related robustness features within `AudioRecorderModule`.
 
 **Branch:** `refactor/audio-segmentation-avduration`
 **Base Branch:** `post-gdrive-removal`
@@ -190,3 +207,12 @@ The module should now record a single segment of `maxSegmentDuration` and then s
 
 **Tasks:**
 *   [ ] (Details to be added after Phase 3 completion)
+
+## Phase 5: Future Considerations & Backlog
+
+Items extracted from `Background_Recording_Improvements.md` and other potential future work for `AudioRecorderModule`:
+
+1.  **Extend native module to handle playback:** Currently, playback might still be using `react-native-audio-recorder-player` or another library. Consolidating playback into `AudioRecorderModule` could streamline native audio handling.
+2.  **Add configurable options for compression and audio quality:** Allow users or the app to choose settings for audio format (e.g., AAC, LPCM), sample rate, bit rate, etc., to balance file size and quality.
+3.  **Implement file repair mechanisms for corrupted recordings:** Develop strategies to salvage audio data from segments that might not have been finalized correctly due to unexpected crashes or errors.
+4.  **Explore background upload/processing of segments:** Investigate if `AudioRecorderModule` should play a role in initiating uploads of completed segments, or if this remains solely the responsibility of `BackgroundTransferManager`. This could involve emitting events with segment details ready for upload.
