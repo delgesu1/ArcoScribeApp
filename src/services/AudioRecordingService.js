@@ -3,6 +3,7 @@ import RNFS from 'react-native-fs';
 import { Recording } from '../utils/DataModels';
 import { formatTime } from '../utils/TimeUtils';
 
+
 const { AudioRecorderModule } = NativeModules;
 const audioRecorderEvents = new NativeEventEmitter(AudioRecorderModule);
 
@@ -20,6 +21,26 @@ let progressCallback = null;
 
 // Flag to enable mock recording mode for testing
 const USE_MOCK_RECORDING = false;
+
+// Seamless playback/composition is now always enabled (feature flag removed)
+
+// Playback callback storage (only for composition path)
+let onPlaybackProgressCb = null;
+let onPlaybackFinishedCb = null;
+
+// Time-to-first-audio metric
+let playbackStartTs = null;
+function getNowMs() {
+  // Use global.performance.now() if available (RN >=0.63), else fallback to Date.now()
+  if (global && global.performance && typeof global.performance.now === 'function') {
+    return global.performance.now();
+  }
+  return Date.now();
+}
+const logTimeToFirstAudio = (label, ms) => {
+  console.log(`[Metrics] ${label}: ${ms.toFixed(1)} ms`);
+  // TODO: send to analytics backend when available
+};
 
 // Initialize event listeners
 const setupEventListeners = () => {
@@ -46,12 +67,43 @@ const setupEventListeners = () => {
     }),
     
     // Recording finished
-    audioRecorderEvents.addListener('onRecordingFinished', (data) => {
+    audioRecorderEvents.addListener('onRecordingFinished', async (data) => {
       console.log('[AudioRecordingService] Recording finished:', data);
       
       // Save segment paths for potential use in playback/transcription
       if (data.segmentPaths && data.segmentPaths.length > 0) {
         currentSegmentPaths = [...data.segmentPaths];
+      }
+      
+      // Schedule background export of composition to merged file
+      if (currentSegmentPaths.length > 1) {
+        try {
+          const recordingsDir = await getRecordingsDirectory();
+          const mergedPath = `${recordingsDir}/${data.recordingId || Date.now()}_merged.m4a`;
+          console.log('[AudioRecordingService] Starting background export to', mergedPath);
+          AudioRecorderModule.exportCompositionToFile(currentSegmentPaths, mergedPath)
+            .then(async (outPath) => {
+              console.log('[AudioRecordingService] Export completed:', outPath);
+              try {
+                const recording = await getRecordingById(data.recordingId);
+                if (recording) {
+                  const updated = {
+                    ...recording,
+                    filePath: outPath,
+                    processingStatus: 'pending', // trigger downstream upload logic
+                  };
+                  await updateRecording(updated);
+                }
+              } catch (dbErr) {
+                console.error('[AudioRecordingService] Failed to persist merged path:', dbErr);
+              }
+            })
+            .catch((err) => {
+              console.error('[AudioRecordingService] Export failed:', err);
+            });
+        } catch (e) {
+          console.error('[AudioRecordingService] Failed to initiate export:', e);
+        }
       }
     }),
     
@@ -68,6 +120,22 @@ const setupEventListeners = () => {
         // Handle processing status (previously came from onRecordingProcessing event)
         console.log('[AudioRecordingService] Recording is being processed');
       }
+    }),
+    
+    // === New seamless playback events ===
+    audioRecorderEvents.addListener('onPlaybackProgress', (data) => {
+      if (progressCallback) {
+        // Provide same shape as AudioRecorderPlayer for UI ease
+        progressCallback({
+          currentPosition: data.currentTime * 1000, // sec -> ms
+          duration: data.duration * 1000,
+        });
+      }
+    }),
+    audioRecorderEvents.addListener('onPlaybackEnded', (data) => {
+      playbackState.isPlaying = false;
+      playbackState.isPaused = false;
+      if (onPlaybackFinishedCb) onPlaybackFinishedCb();
     })
   ];
 };
@@ -596,6 +664,8 @@ const playbackState = {
   isPlaying: false,
   isPaused: false,
   currentPath: null,
+  playerId: null,
+  usingComposition: false,
 };
 
 // Play recording
@@ -623,6 +693,39 @@ export const playRecording = async (filePath, onProgress, onFinished) => {
   if (playbackState.isPlaying || playbackState.isPaused) {
     console.log('[AudioRecordingService] Playback is already in progress or paused. Stopping it first.');
     await stopPlayback();
+  }
+
+  playbackStartTs = getNowMs(); // mark start for TTF-audio
+
+  // Handle new composition playback
+  if (currentSegmentPaths && currentSegmentPaths.length > 0) {
+    try {
+      // Ensure any existing playback stopped
+      if (playbackState.isPlaying || playbackState.isPaused) {
+        await stopPlayback();
+      }
+
+      // Configure native session
+      await AudioRecorderModule.configureSessionForPlayback();
+
+      const playerId = await AudioRecorderModule.createPlaybackItem(currentSegmentPaths);
+
+      playbackState.playerId = playerId;
+      playbackState.usingComposition = true;
+      playbackState.isPlaying = true;
+      playbackState.isPaused = false;
+
+      // Store callbacks
+      progressCallback = onProgress;
+      onPlaybackFinishedCb = onFinished;
+
+      // Start playback
+      AudioRecorderModule.play(playerId);
+      return playerId;
+    } catch (err) {
+      console.error('[AudioRecordingService] Composition playback failed, falling back:', err);
+      // fallthrough to old path below
+    }
   }
 
   // Check if this is a mock recording
@@ -653,18 +756,9 @@ export const playRecording = async (filePath, onProgress, onFinished) => {
   console.log(`Starting real playback for path: ${filePath}`);
   console.log(`Using path with file:// prefix for player: ${pathForPlayer}`);
   
-  // If multiple segments exist, lazily concatenate before playback to allow full-length listening
   if (currentSegmentPaths && currentSegmentPaths.length > 1) {
-    try {
-      console.log('[AudioRecordingService] Multiple segments detected; performing on-demand concatenation');
-      const tempMergedPath = `${RNFS.CachesDirectoryPath}/merged_${Date.now()}.m4a`;
-      const concatResult = await AudioRecorderModule.concatenateSegments(currentSegmentPaths, tempMergedPath);
-      filePath = concatResult?.outputPath || tempMergedPath;
-      console.log('[AudioRecordingService] Concatenation complete, new path:', filePath);
-    } catch (mergeErr) {
-      console.error('[AudioRecordingService] Failed to concatenate segments for playback:', mergeErr);
-      // Fallback: play first segment only
-    }
+    // On-demand concatenation path removed (Task 7).  Composition playback handles
+    // seamless multi-segment playback.
   }
 
   const result = await audioRecorderPlayer.startPlayer(pathForPlayer);
@@ -677,6 +771,11 @@ export const playRecording = async (filePath, onProgress, onFinished) => {
 
   // Add listener for progress updates
   audioRecorderPlayer.addPlayBackListener((e) => {
+    if (playbackStartTs != null) {
+      const ttf = getNowMs() - playbackStartTs;
+      logTimeToFirstAudio('time_to_first_audio', ttf);
+      playbackStartTs = null; // ensure only logged once
+    }
     if (onProgress) {
       onProgress(e); // e contains {currentPosition, duration}
     }
@@ -692,6 +791,12 @@ export const playRecording = async (filePath, onProgress, onFinished) => {
 
 // Pause playback
 export const pausePlayback = async () => {
+  if (playbackState.usingComposition && playbackState.playerId != null) {
+    await AudioRecorderModule.pause(playbackState.playerId);
+    playbackState.isPaused = true;
+    playbackState.isPlaying = false;
+    return true;
+  }
   try {
     // If we're in mock mode, just return success
     if (USE_MOCK_RECORDING) {
@@ -717,6 +822,12 @@ export const pausePlayback = async () => {
 
 // Resume playback
 export const resumePlayback = async () => {
+  if (playbackState.usingComposition && playbackState.playerId != null) {
+    await AudioRecorderModule.play(playbackState.playerId);
+    playbackState.isPaused = false;
+    playbackState.isPlaying = true;
+    return true;
+  }
   try {
     // If we're in mock mode, just return success
     if (USE_MOCK_RECORDING) {
@@ -742,6 +853,20 @@ export const resumePlayback = async () => {
 
 // Stop playback
 export const stopPlayback = async () => {
+  if (playbackState.usingComposition && playbackState.playerId != null) {
+    try {
+      await AudioRecorderModule.destroyPlaybackItem(playbackState.playerId);
+    } catch (e) {
+      console.warn('destroyPlaybackItem error', e);
+    }
+    playbackState.isPlaying = false;
+    playbackState.isPaused = false;
+    playbackState.playerId = null;
+    playbackState.usingComposition = false;
+    progressCallback = null;
+    onPlaybackFinishedCb = null;
+    return true;
+  }
   try {
     // If we're in mock mode, just return success
     if (USE_MOCK_RECORDING) {
@@ -770,6 +895,10 @@ export const stopPlayback = async () => {
 
 // Seek playback
 export const seekPlayback = async (timeMs) => {
+  if (playbackState.usingComposition && playbackState.playerId != null) {
+    await AudioRecorderModule.seekTo(playbackState.playerId, timeMs / 1000);
+    return true;
+  }
   try {
     if (USE_MOCK_RECORDING) {
       console.log('Seeking mock playback (simulated)');

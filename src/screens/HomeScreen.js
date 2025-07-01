@@ -48,9 +48,14 @@ const HomeScreen = ({ navigation }) => {
     console.log('Loading recordings...');
     try {
       const recordingsList = await getRecordings();
-      setRecordings(recordingsList);
       
-      const stillProcessing = recordingsList.find(r => r.id === processingId && r.processingStatus === 'processing');
+      // Ensure all recordings have valid IDs to use as keys
+      const validRecordings = recordingsList.filter(r => r && r.id);
+      
+      // Update recordings state with new array
+      setRecordings(validRecordings);
+      
+      const stillProcessing = validRecordings.find(r => r.id === processingId && r.processingStatus === 'processing');
       if (processingId && !stillProcessing) {
           console.log(`Process for ${processingId} seems complete or errored, clearing local processing state.`);
           setProcessingId(null);
@@ -64,14 +69,17 @@ const HomeScreen = ({ navigation }) => {
   // Filter recordings based on search query
   useEffect(() => {
     if (searchQuery === '') {
-      setFilteredRecordings(recordings);
+      // Make sure we create a new array to avoid reference issues
+      setFilteredRecordings([...recordings]);
     } else {
       const lowerCaseQuery = searchQuery.toLowerCase();
       const filtered = recordings.filter(recording => 
-        recording.title?.toLowerCase().includes(lowerCaseQuery) ||
-        recording.date?.toLowerCase().includes(lowerCaseQuery) || // Also search date
-        (recording.transcript && recording.transcript.toLowerCase().includes(lowerCaseQuery)) ||
-        (recording.summary && recording.summary.toLowerCase().includes(lowerCaseQuery))
+        recording && (
+          (recording.title && recording.title.toLowerCase().includes(lowerCaseQuery)) ||
+          (recording.date && recording.date.toLowerCase().includes(lowerCaseQuery)) ||
+          (recording.transcript && recording.transcript.toLowerCase().includes(lowerCaseQuery)) ||
+          (recording.summary && recording.summary.toLowerCase().includes(lowerCaseQuery))
+        )
       );
       setFilteredRecordings(filtered);
     }
@@ -541,8 +549,9 @@ const HomeScreen = ({ navigation }) => {
       <FlatList
         data={filteredRecordings}
         renderItem={renderItem}
-        keyExtractor={item => item.id}
+        keyExtractor={item => item.id || `temp-${Math.random()}`} // Fallback key if id is missing
         contentContainerStyle={styles.listContent}
+        extraData={[isEditing, selectedRecordingIds, processingId]} // Re-render when these change
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>No recordings yet</Text>

@@ -8,7 +8,8 @@ export class Recording {
     duration,
     transcript = null,
     summary = null,
-    processingStatus = 'pending' // pending, processing, complete, error
+    processingStatus = 'pending', // pending, processing, complete, error
+    userModifiedTitle = false
   }) {
     this.id = id;
     this.title = title;
@@ -18,6 +19,7 @@ export class Recording {
     this.transcript = transcript;
     this.summary = summary;
     this.processingStatus = processingStatus;
+    this.userModifiedTitle = userModifiedTitle;
   }
 
   // Convert to plain object for storage
@@ -30,7 +32,8 @@ export class Recording {
       duration: this.duration,
       transcript: this.transcript,
       summary: this.summary,
-      processingStatus: this.processingStatus
+      processingStatus: this.processingStatus,
+      userModifiedTitle: this.userModifiedTitle
     };
   }
 

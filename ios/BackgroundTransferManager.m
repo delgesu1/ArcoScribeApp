@@ -489,11 +489,11 @@ RCT_EXPORT_METHOD(startUploadTask:(NSDictionary *)taskInfo
          // If error is nil, it means success.
          // For downloads, success is handled in didFinishDownloadingToURL.
          // For uploads (when we re-enable them), handle success here based on response.
-         if ([taskType isEqualToString:@"transcription"] || [taskType isEqualToString:@"summarization"]) {
+         if ([taskType isEqualToString:@"transcription"] || [taskType isEqualToString:@"summarization"] || [taskType isEqualToString:@"titleGeneration"]) {
              NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
              NSLog(@"[BackgroundTransferManager] Handling non-error completion for UPLOAD task %@", taskId);
              NSInteger statusCode = response ? response.statusCode : 0;
-             NSData *responseData = self.taskData[taskId] ?: [NSData data];
+             NSData *responseData = self.taskData[taskId];
              NSString *responseString = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding] ?: @"";
 
              if (statusCode >= 200 && statusCode < 300) {
@@ -536,7 +536,7 @@ RCT_EXPORT_METHOD(startUploadTask:(NSDictionary *)taskInfo
              }
              [self.taskData removeObjectForKey:taskId];
              [self.taskCallbacks removeObjectForKey:taskId];
-         } else if (![taskType isEqualToString:@"download_test"]) {
+         } else if (![taskType isEqualToString:@"download_test"] && ![taskType isEqualToString:@"titleGeneration"]) {
               NSLog(@"[BackgroundTransferManager] Task %@ completed without error, unknown type: %@", taskId, taskType);
               [self.taskCallbacks removeObjectForKey:taskId];
               [self.taskData removeObjectForKey:taskId];

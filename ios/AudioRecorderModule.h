@@ -42,6 +42,11 @@ extern NSString * const AudioRecordingDidStopNotification;
 @property (nonatomic, assign) CFTimeInterval durationAtSegmentStart;
 @property (nonatomic, assign) NSTimeInterval durationOfSegmentBeforeStop;
 
+// Playback management properties
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, AVPlayer *> *playbackPlayers; // playerId -> AVPlayer
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, id> *playbackTimeObservers; // playerId -> id returned by addPeriodicTimeObserver
+@property (nonatomic, assign) NSUInteger nextPlayerId;
+
 // Promise storage properties for deferred stop recording
 // Promise resolution now happens immediately in stopRecording - no pending resolvers needed
 
@@ -61,5 +66,20 @@ extern NSString * const AudioRecordingDidStopNotification;
                  outputPath:(NSString *)outputPath
                    resolver:(RCTPromiseResolveBlock)resolve
                    rejecter:(RCTPromiseRejectBlock)reject;
+
+// === Seamless playback API ===
+- (void)createPlaybackItem:(NSArray<NSString *> *)segmentPaths
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject;
+- (void)play:(NSNumber *)playerId;
+- (void)pause:(NSNumber *)playerId;
+- (void)seekTo:(NSNumber *)playerId time:(double)seconds;
+- (void)destroyPlaybackItem:(NSNumber *)playerId;
+
+// Export composition to a merged file in background
+- (void)exportCompositionToFile:(NSArray<NSString *> *)segmentPaths
+                     outputPath:(NSString *)outputPath
+                       resolver:(RCTPromiseResolveBlock)resolve
+                       rejecter:(RCTPromiseRejectBlock)reject;
 
 @end

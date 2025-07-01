@@ -11,7 +11,21 @@ const transferEmitter = new NativeEventEmitter(BackgroundTransferManager);
 // --- Constants for OpenAI & ElevenLabs ---
 // API endpoints
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/speech-to-text'; // ElevenLabs Speech-to-Text API
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions'; // OpenAI Chat Completions API
+// Shared Responses API endpoint for both summary and title generation
+const OPENAI_RESPONSES_API_URL = 'https://api.openai.com/v1/responses';
+
+// --- Title Generation Constants ---
+// Instructions to produce a concise, single-line recording title from a recording summary
+const TITLE_INSTRUCTIONS = `Your task: from the given violin-lesson summary, output ONE concise line that best names the pieces or technical topics covered.
+Guidelines:
+- Use only the shortest possible label for each piece or composer mentioned (e.g., just the composer's surname, or 'Rode 12', 'Kreutzer 23', 'Tchaikovsky').
+- Do NOT include details about what was done with each piece (e.g., do not include 'fast passages', 'octaves', etc. after the piece name).
+- If multiple items, separate with commas (e.g., 'Tchaikovsky, Rode 12, String Crossings').
+- If no pieces are mentioned, summarize the main technical topics in a few words (e.g., 'Bow hold', 'Spiccato').
+- No complete sentences, avoid filler words.`;
+
+// Regex patterns signalling an unusable summary/title
+const TITLE_FAILURE_PATTERNS = [/no violin content/i, /no musical content/i, /transcription failed/i];
 
 // TODO: Fill in your actual summary instructions
 const SUMMARY_INSTRUCTIONS = `You are a renowned expert in violin pedagogy. Your task is to transform a raw transcript of a violin lesson into a meticulously structured and detailed guide that captures every nuance of the lesson. Follow these guidelines:
@@ -34,9 +48,11 @@ const SUMMARY_INSTRUCTIONS = `You are a renowned expert in violin pedagogy. Your
 
 - **Document Structure:**  
   - Title: Plain, clear title that states the main topic/piece which worked on
-  - Body: Organize the content in a clean, logically structured format using Markdown.  
-  - Do not include any introduction, conclusion or summary sections.
-  - Do not bold any of the markdown headings.
+  - Body: Organize the content in a clean, logically structured format using Markdown.
+    - Use Markdown heading syntax for all major sections and subsections (e.g., # for main title, ## for primary sections, ### for subsections) to provide clarity and hierarchy.
+    - Do not bold specifically any of the markdown headings.
+    - You may utilize bolding, italics and other formatting to enhance the organization and presentation of the content.
+    - Avoid unnecessary introduction, conclusion, or summary sections unless they are musically relevant.
 
 **Present your final output entirely within a properly formatted Markdown code block.**
 
@@ -49,6 +65,7 @@ class BackgroundTransferService {
 
   setupEventListeners() {
     transferEmitter.addListener('onTransferComplete', async (event) => {
+      console.log('[DEBUG] onTransferComplete raw event:', JSON.stringify(event));
       console.log('Transfer complete:', event);
       // Note: Native module sends 'responseData', JS uses 'response'. This is consistent internally.
       const { taskId, taskType, recordingId, response } = event; 
@@ -57,6 +74,8 @@ class BackgroundTransferService {
           await this.handleTranscriptionComplete(recordingId, response);
         } else if (taskType === 'summarization') {
           await this.handleSummarizationComplete(recordingId, response);
+        } else if (taskType === 'titleGeneration') {
+          await this.handleTitleGenerationComplete(recordingId, response);
         }
         // TODO: Implement 'clearTask' method in the native BackgroundTransferManager module
         await BackgroundTransferManager.clearTask(taskId); 
@@ -86,16 +105,6 @@ class BackgroundTransferService {
           if (taskId) { // Only clear if taskId is available (might not be for start errors)
              await BackgroundTransferManager.clearTask(taskId); // Clear failed task from persistence 
           }
-
-          // --- ADDED: Clean up concatenated file on error ---
-          if (recording && recording._tempConcatPath) {
-              console.log(`[BackgroundTransferService] Cleaning up temporary concatenated file on error: ${recording._tempConcatPath}`);
-              await RNFS.unlink(recording._tempConcatPath);
-              // Remove the temporary path from the recording metadata if necessary
-              const updatedRecording = { ...recording };
-              delete updatedRecording._tempConcatPath;
-              await updateRecording(updatedRecording);
-          }
       } catch (handlerError) {
           console.error('Critical error handling transfer error:', handlerError);
       }
@@ -104,40 +113,13 @@ class BackgroundTransferService {
 
   async startTranscriptionUpload(recording) {
     let uploadFilePath = recording.filePath; // Default to existing filePath
-    let tempConcatPath = null; // Track temporary path for cleanup
 
     try {
-      // --- ADDED: Concatenation Logic ---
-      if (recording.segmentPaths && recording.segmentPaths.length > 1) {
-        console.log(`[BackgroundTransferService] Multiple segments found (${recording.segmentPaths.length}), concatenating...`);
-        
-        // Define a temporary output path in the cache directory
-        const tempFileName = `concatenated_${recording.id}.m4a`;
-        tempConcatPath = `${RNFS.CachesDirectoryPath}/${tempFileName}`;
-        console.log(`[BackgroundTransferService] Temporary concatenation path: ${tempConcatPath}`);
+      // We now expect recording.filePath to already point to the merged asset (exported
+      // by AudioRecordingService).  Simply mark processing and proceed.
+      const processingRecording = { ...recording, processingStatus: 'processing' };
+      await updateRecording(processingRecording);
 
-        // Call the native concatenation method
-        const concatResult = await AudioRecorderModule.concatenateSegments(
-          recording.segmentPaths,
-          tempConcatPath
-        );
-        // The native method returns an object { success, outputPath }
-        uploadFilePath = concatResult?.outputPath || tempConcatPath;
-        console.log(`[BackgroundTransferService] Concatenation complete. Uploading: ${uploadFilePath}`);
-
-        // Store temp path in recording temporarily for cleanup later
-        // Note: This adds a temporary field; consider if this is the best approach
-        // Alternatively, manage cleanup state within this service.
-        const processingRecordingWithTempPath = { ...recording, processingStatus: 'processing', _tempConcatPath: tempConcatPath };
-        await updateRecording(processingRecordingWithTempPath);
-      } else {
-         // If only one segment, update status normally
-         const processingRecording = { ...recording, processingStatus: 'processing' };
-         await updateRecording(processingRecording);
-      }
-      // --- END ADDED ---
-
-      // --- MODIFIED: Use uploadFilePath which might be concatenated path --- 
       const formData = {
         model_id: "scribe_v1", 
         language_detection: true,
@@ -146,7 +128,7 @@ class BackgroundTransferService {
       };
 
       const taskId = await BackgroundTransferManager.startUploadTask({ 
-        filePath: uploadFilePath, // Use the potentially concatenated path
+        filePath: uploadFilePath, // Now always the merged path
         apiUrl: ELEVENLABS_API_URL,
         headers: {
           'xi-api-key': ELEVENLABS_API_KEY, 
@@ -154,11 +136,7 @@ class BackgroundTransferService {
         },
         body: JSON.stringify(formData),
         taskType: 'transcription',
-        metadata: { 
-            recordingId: recording.id, 
-            // Pass temp path if it exists, for cleanup on completion/error
-            tempConcatPath: tempConcatPath 
-        } 
+        metadata: { recordingId: recording.id }, 
       });
 
       console.log('Started transcription upload task:', taskId, 'for recording:', recording.id, 'using file:', uploadFilePath);
@@ -167,15 +145,6 @@ class BackgroundTransferService {
       console.error('Error starting transcription upload:', error);
       // Pass tempConcatPath to error handler for potential cleanup
       await this.handleTransferError(null, 'transcription', recording.id, `Failed to start upload: ${error.message}`);
-      // Clean up temp file immediately if concatenation succeeded but upload start failed
-      if (tempConcatPath) {
-        try {
-          console.log('[BackgroundTransferService] Cleaning up temp concat file after upload start failure:', tempConcatPath);
-          await RNFS.unlink(tempConcatPath);
-        } catch (unlinkError) {
-          console.error('[BackgroundTransferService] Error cleaning up temp file after start failure:', unlinkError);
-        }
-      }
       throw error;
     }
   }
@@ -192,17 +161,13 @@ class BackgroundTransferService {
 
       // Prepare request body for OpenAI Chat Completions
       const requestBody = {
-        model: "gpt-4.1", // User confirmed model
+        model: "gpt-4o", // User confirmed model
         instructions: SUMMARY_INSTRUCTIONS, // Use instructions field
         input: recording.transcript, // Use input field for the transcript
-        temperature: 0.5, // Reinstate temperature
+        temperature: 0.25, // Reinstate temperature
         store: false, // Optionally disable storage
         // max_output_tokens: 6000, // Optional, leave out for now
       };
-
-      // Determine the API URL for the Responses API
-      // Assuming it's /v1/responses based on python client: client.responses.create()
-      const OPENAI_RESPONSES_API_URL = 'https://api.openai.com/v1/responses'; 
 
       const taskId = await BackgroundTransferManager.startUploadTask({ 
         apiUrl: OPENAI_RESPONSES_API_URL, // Use Responses API endpoint
@@ -225,27 +190,48 @@ class BackgroundTransferService {
     }
   }
 
-  async handleTranscriptionComplete(recordingId, response) {
-    // --- ADDED: Cleanup for concatenated file ---
-    let tempPathToClean = null;
-    try {
-       // Check if the temp path needs cleaning (passed via metadata in startUploadTask)
-       // Note: This relies on the metadata being reliably available. 
-       // Consider fetching the recording data again if metadata isn't guaranteed.
-       const recording = await getRecordingById(recordingId);
-       if (recording && recording._tempConcatPath) {
-           tempPathToClean = recording._tempConcatPath;
-           console.log(`[BackgroundTransferService] Will clean up temp file after processing: ${tempPathToClean}`);
-           // Optionally remove the _tempConcatPath field from metadata now
-           const updatedRec = { ...recording };
-           delete updatedRec._tempConcatPath;
-           await updateRecording(updatedRec);
-       }
-    } catch (fetchError) {
-        console.error("[BackgroundTransferService] Error fetching recording data for cleanup check:", fetchError);
+  async startTitleGenerationUpload(recording) {
+    console.log('[DEBUG] startTitleGenerationUpload called for', recording.id, 'summary length:', (recording.summary||'').length);
+    if (!recording.summary) {
+      console.warn('[BackgroundTransfer] No summary – skip title generation for', recording.id);
+      return null;
     }
-    // --- END ADDED ---
 
+    try {
+      const processingRecording = { ...recording, processingStatus: 'processing' };
+      await updateRecording(processingRecording);
+
+      const requestBody = {
+        model: 'gpt-4.1-mini',
+        instructions: TITLE_INSTRUCTIONS,
+        input: recording.summary,
+        temperature: 0.2,
+        store: false,
+      };
+
+      const taskId = await BackgroundTransferManager.startUploadTask({
+        apiUrl: OPENAI_RESPONSES_API_URL,
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        taskType: 'titleGeneration',
+        metadata: { recordingId: recording.id },
+        filePath: null,
+      });
+      console.log('[DEBUG] startTitleGenerationUpload created task', taskId);
+
+      console.log('Started title generation task:', taskId, 'for recording:', recording.id);
+      return taskId;
+    } catch (error) {
+      console.error('Error starting title generation upload:', error);
+      await this.handleTransferError(null, 'titleGeneration', recording.id, 'Failed to start upload');
+      throw error;
+    }
+  }
+
+  async handleTranscriptionComplete(recordingId, response) {
      try {
         console.log(`Raw transcription response for ${recordingId}:`, response);
         
@@ -265,8 +251,6 @@ class BackgroundTransferService {
             transcript,
             processingStatus: 'processing', 
         };
-        // Remove temporary path field if it still exists
-        delete updatedRecording._tempConcatPath; 
         await updateRecording(updatedRecording);
         console.log(`Transcription complete for ${recordingId}, starting summarization...`);
 
@@ -274,17 +258,6 @@ class BackgroundTransferService {
     } catch (error) {
         console.error(`Error handling transcription completion for ${recordingId}:`, error);
         await this.handleTransferError(null, 'transcription', recordingId, `Processing failed: ${error.message}`);
-    } finally {
-        // --- ADDED: Perform cleanup regardless of success/failure within processing ---
-        if (tempPathToClean) {
-            try {
-                console.log(`[BackgroundTransferService] Performing cleanup of temp file: ${tempPathToClean}`);
-                await RNFS.unlink(tempPathToClean);
-            } catch (cleanupError) {
-                console.error('[BackgroundTransferService] Error during final cleanup of temp file:', cleanupError);
-            }
-        }
-        // --- END ADDED ---
     }
   }
 
@@ -323,17 +296,74 @@ class BackgroundTransferService {
 
         const updatedRecording = {
             ...recording,
-            summary: cleanMarkdownText(summary), // Use the cleaner function
-            processingStatus: 'complete', // Final state
+            summary: cleanMarkdownText(summary),
+            processingStatus: 'processing', // remain processing until title generation completes
         };
         await updateRecording(updatedRecording);
-        console.log(`Summarization complete (Responses API) for ${recordingId}`);
+        console.log(`Summarization complete for ${recordingId}, starting title generation...`);
 
+        await this.startTitleGenerationUpload(updatedRecording);
 
     } catch (error) {
         console.error(`Error handling summarization completion (Responses API) for ${recordingId}:`, error);
          // Ensure we pass taskId if available, though it's not provided here by the event
         await this.handleTransferError(null, 'summarization', recordingId, `Processing failed: ${error.message}`);
+    }
+  }
+
+  async handleTitleGenerationComplete(recordingId, response) {
+    console.log('[DEBUG] handleTitleGenerationComplete entered for', recordingId);
+    try {
+      const responseData = JSON.parse(response);
+      console.log(`Raw title generation response for ${recordingId}:`, JSON.stringify(responseData, null, 2));
+
+      const recording = await getRecordingById(recordingId);
+      if (!recording) {
+        console.error(`[BackgroundTransferService] Recording ${recordingId} not found in handleTitleGenerationComplete.`);
+        throw new Error(`Recording ${recordingId} not found`);
+      }
+
+      // If user already modified the title, just mark as complete and don't override title
+      if (recording.userModifiedTitle) {
+        console.log(`[BackgroundTransferService] User has manually set title for ${recordingId}. Skipping auto-title.`);
+        await updateRecording({ ...recording, processingStatus: 'complete' });
+        console.log('Title generation process complete for (user-modified title kept)', recordingId);
+        return; // Exit early
+      }
+
+      let titleText = null;
+      if (
+        responseData.output &&
+        Array.isArray(responseData.output) &&
+        responseData.output.length > 0 &&
+        responseData.output[0].type === 'message' &&
+        responseData.output[0].content &&
+        Array.isArray(responseData.output[0].content) &&
+        responseData.output[0].content.length > 0 &&
+        responseData.output[0].content[0].type === 'output_text' &&
+        responseData.output[0].content[0].text
+      ) {
+        titleText = responseData.output[0].content[0].text.trim();
+      }
+      console.log('[DEBUG] Parsed title text:', titleText);
+
+      const invalid =
+        !titleText ||
+        titleText.length < 5 ||
+        TITLE_FAILURE_PATTERNS.some((re) => re.test(titleText));
+      console.log('[DEBUG] Title invalid?', invalid);
+
+      if (invalid) {
+        console.warn('Generated title invalid, keeping original. Title text:', titleText);
+        await updateRecording({ ...recording, processingStatus: 'complete' });
+      } else {
+        await updateRecording({ ...recording, title: titleText, processingStatus: 'complete' });
+      }
+
+      console.log('Title generation complete for', recordingId);
+    } catch (error) {
+      console.error(`Error handling title generation completion for ${recordingId}:`, error);
+      await this.handleTransferError(null, 'titleGeneration', recordingId, `Processing failed: ${error.message}`);
     }
   }
 

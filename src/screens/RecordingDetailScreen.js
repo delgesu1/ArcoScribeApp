@@ -12,6 +12,7 @@ import {
   AppState,
   useWindowDimensions,
   Image,
+  TextInput,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import {
@@ -22,6 +23,7 @@ import {
   resumePlayback,
   stopPlayback,
   seekPlayback,
+  updateRecording,
 } from '../services/AudioRecordingService';
 import { formatTime } from '../utils/TimeUtils';
 import MarkdownIt from 'markdown-it';
@@ -43,6 +45,8 @@ const RecordingDetailScreen = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [summaryExpanded, setSummaryExpanded] = useState(true);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editableTitle, setEditableTitle] = useState('');
   const appState = useRef(AppState.currentState);
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
@@ -88,6 +92,11 @@ const RecordingDetailScreen = ({ route, navigation }) => {
   useEffect(() => {
     if (isFocused) {
       loadRecording();
+    }
+
+    // When recording data is loaded, initialize the editable title
+    if (recording?.title && editableTitle === '') {
+      setEditableTitle(recording.title);
     }
     
     const subscription = AppState.addEventListener('change', _handleAppStateChange);
@@ -266,6 +275,39 @@ const RecordingDetailScreen = ({ route, navigation }) => {
     setTranscriptExpanded(!transcriptExpanded);
   };
 
+  const handleToggleEditTitle = async (save = false) => {
+    if (isEditingTitle && save) {
+      // Validate input
+      if (!editableTitle.trim()) {
+        Alert.alert('Error', 'Title cannot be empty');
+        return;
+      }
+
+      try {
+        // Save the new title
+        await updateRecording({
+          ...recording,
+          title: editableTitle.trim(),
+          userModifiedTitle: true,
+        });
+        // Update local state
+        setRecording(prev => ({ ...prev, title: editableTitle.trim(), userModifiedTitle: true }));
+        setIsEditingTitle(false);
+      } catch (error) {
+        console.error('Error updating title:', error);
+        Alert.alert('Error', 'Failed to update recording title');
+      }
+    } else if (!isEditingTitle) {
+      // Enter edit mode
+      setEditableTitle(recording.title);
+      setIsEditingTitle(true);
+    } else {
+      // Cancel editing
+      setEditableTitle(recording.title);
+      setIsEditingTitle(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -303,10 +345,51 @@ const RecordingDetailScreen = ({ route, navigation }) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.headerContainer}>
-          <Text style={styles.titleText}>{recording.title}</Text>
-          <Text style={styles.dateText}>{recording.date} · {recording.duration}</Text>
+          <View style={styles.titleRow}>
+            {isEditingTitle ? (
+              <TextInput
+                style={styles.titleInput}
+                value={editableTitle}
+                onChangeText={setEditableTitle}
+                autoFocus
+                selectTextOnFocus
+                maxLength={100}
+                multiline={true}
+                numberOfLines={3}
+                blurOnSubmit={true}
+              />
+            ) : (
+              <Text style={styles.titleText}>{recording.title}</Text>
+            )}
+            {isEditingTitle ? (
+              <View style={{flexDirection: 'row'}}>
+                <TouchableOpacity
+                  style={{ padding: 5, marginRight: 10 }}
+                  onPress={() => handleToggleEditTitle(true)}
+                >
+                  <Icon name="checkmark-circle-outline" size={28} color="#4CAF50" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ padding: 5 }}
+                  onPress={() => handleToggleEditTitle(false)}
+                >
+                  <Icon name="close-circle-outline" size={28} color="#F44336" />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => handleToggleEditTitle()}
+              >
+                <Icon name="pencil" size={18} color="#8E8E93" />
+              </TouchableOpacity>
+            )}
+          </View>
+          {!isEditingTitle && (
+            <Text style={styles.dateText}>{recording.date} · {recording.duration}</Text>
+          )}
         </View>
 
         <View style={styles.playerContainer}>
@@ -473,10 +556,40 @@ const styles = StyleSheet.create({
   headerContainer: {
     marginBottom: 20,
   },
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
   titleText: {
     fontSize: 24,
     fontWeight: '600',
-    marginBottom: 4,
+    flex: 1,
+  },
+  titleInput: {
+    fontSize: 24,
+    fontWeight: '600',
+    flex: 1,
+    padding: 4,
+    paddingBottom: 8,
+    color: '#007AFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#007AFF',
+    minHeight: 30,
+    maxHeight: 90, // Approximately 3 lines of text
+    textAlignVertical: 'top',
+  },
+  editButton: {
+    padding: 6,
+    marginLeft: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelButton: {
+    padding: 4,
+    marginLeft: 4,
+    justifyContent: 'center',
   },
   dateText: {
     fontSize: 16,

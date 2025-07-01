@@ -90,6 +90,11 @@ RCT_EXPORT_MODULE();
                                                      name:AVAudioSessionRouteChangeNotification
                                                    object:nil];
         
+        // Initialize playback dictionaries and counters
+        self.playbackPlayers = [NSMutableDictionary new];
+        self.playbackTimeObservers = [NSMutableDictionary new];
+        self.nextPlayerId = 1;
+        
         RCTLogInfo(@"[AudioRecorderModule] Initialized");
     }
     return self;
@@ -110,7 +115,10 @@ RCT_EXPORT_MODULE();
         @"onRecordingProgress",
         @"onRecordingFinished",
         @"onRecordingError",
-        @"onRecordingUpdate"
+        @"onRecordingUpdate",
+        @"onRecordingSegmentComplete", // Playback events
+        @"onPlaybackProgress",
+        @"onPlaybackEnded"
     ];
 }
 
@@ -1277,7 +1285,7 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
     dispatch_async(audioProcessingQueue, ^{
         AVMutableComposition *composition = [AVMutableComposition composition];
         AVMutableCompositionTrack *compositionAudioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
-        CMTime currentTime = kCMTimeZero;
+        CMTime cursor = kCMTimeZero;
         NSError *localError = nil;
         
         for (NSString *path in uniqueSegmentPaths) {
@@ -1293,7 +1301,7 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
             AVAssetTrack *clipAudioTrack = tracks[0];
             CMTimeRange timeRange = CMTimeRangeMake(kCMTimeZero, asset.duration);
 
-            BOOL success = [compositionAudioTrack insertTimeRange:timeRange ofTrack:clipAudioTrack atTime:currentTime error:&localError];
+            BOOL success = [compositionAudioTrack insertTimeRange:timeRange ofTrack:clipAudioTrack atTime:cursor error:&localError];
             if (!success || localError) {
                 RCTLogError(@"[AudioRecorderModule] Failed to insert track from segment %@: %@", path, localError.localizedDescription);
                 
@@ -1304,7 +1312,7 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
                 return;
             }
             
-            currentTime = CMTimeAdd(currentTime, asset.duration);
+            cursor = CMTimeAdd(cursor, asset.duration);
         }
         
         // Set up the session for the export
@@ -1364,6 +1372,115 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
             });
         }];
     });
+}
+
+#pragma mark - Playback Helpers
+
+- (void)sendPlaybackProgressForPlayer:(NSNumber *)playerId currentTime:(CMTime)time duration:(CMTime)duration {
+    if (!hasListeners) return;
+    double currentSec = CMTimeGetSeconds(time);
+    double totalSec = CMTimeGetSeconds(duration);
+    dispatch_async(self.eventDispatchQueue, ^{
+        [self sendEventWithName:@"onPlaybackProgress" body:@{
+            @"playerId": playerId ?: @(0),
+            @"currentTime": @(currentSec),
+            @"duration": @(totalSec)
+        }];
+    });
+}
+
+#pragma mark - Seamless Playback API
+
+RCT_EXPORT_METHOD(createPlaybackItem:(NSArray<NSString *> *)segmentPaths
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    if (segmentPaths.count == 0) {
+        reject(@"no_segments", @"Segment paths array is empty", nil);
+        return;
+    }
+    // Build composition
+    AVMutableComposition *composition = [AVMutableComposition composition];
+    CMTime cursor = kCMTimeZero;
+    for (NSString *path in segmentPaths) {
+        NSURL *url = [NSURL fileURLWithPath:path];
+        AVURLAsset *asset = [AVURLAsset assetWithURL:url];
+        if (!asset) continue;
+        CMTimeRange range = CMTimeRangeMake(kCMTimeZero, asset.duration);
+        NSError *err = nil;
+        if (![composition insertTimeRange:range ofAsset:asset atTime:cursor error:&err]) {
+            RCTLogError(@"[AudioRecorderModule] Failed to insert asset %@: %@", path, err);
+        }
+        cursor = CMTimeAdd(cursor, asset.duration);
+    }
+    AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:composition];
+    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
+    
+    NSNumber *playerId = @(self.nextPlayerId++);
+    self.playbackPlayers[playerId] = player;
+    
+    __weak typeof(self) weakSelf = self;
+    // Progress observer every 0.2s
+    id timeObs = [player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.2, NSEC_PER_SEC)
+                                                      queue:nil
+                                                 usingBlock:^(CMTime time) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf sendPlaybackProgressForPlayer:playerId currentTime:time duration:item.duration];
+    }];
+    self.playbackTimeObservers[playerId] = timeObs;
+    
+    // Ended notification
+    [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item queue:nil usingBlock:^(NSNotification * _Nonnull note) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (hasListeners) {
+            [strongSelf sendEventWithName:@"onPlaybackEnded" body:@{ @"playerId": playerId }];
+        }
+    }];
+    
+    resolve(playerId);
+}
+
+RCT_EXPORT_METHOD(play:(nonnull NSNumber *)playerId)
+{
+    AVPlayer *player = self.playbackPlayers[playerId];
+    if (player) {
+        [player play];
+    }
+}
+
+RCT_EXPORT_METHOD(pause:(nonnull NSNumber *)playerId)
+{
+    AVPlayer *player = self.playbackPlayers[playerId];
+    if (player) {
+        [player pause];
+    }
+}
+
+RCT_EXPORT_METHOD(seekTo:(nonnull NSNumber *)playerId time:(double)seconds)
+{
+    AVPlayer *player = self.playbackPlayers[playerId];
+    if (player) {
+        CMTime target = CMTimeMakeWithSeconds(seconds, NSEC_PER_SEC);
+        [player seekToTime:target toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    }
+}
+
+RCT_EXPORT_METHOD(destroyPlaybackItem:(nonnull NSNumber *)playerId)
+{
+    AVPlayer *player = self.playbackPlayers[playerId];
+    if (!player) return;
+    
+    id observer = self.playbackTimeObservers[playerId];
+    if (observer) {
+        [player removeTimeObserver:observer];
+        [self.playbackTimeObservers removeObjectForKey:playerId];
+    }
+    [player pause];
+    [self.playbackPlayers removeObjectForKey:playerId];
+    // Remove any end notification observers related to this item
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:player.currentItem];
 }
 
 #pragma mark - Private Helper Methods
@@ -1515,6 +1632,68 @@ RCT_EXPORT_METHOD(concatenateSegments:(NSArray<NSString *> *)segmentPaths
     } else {
         RCTLogInfo(@"[AudioRecorderModule] Audio session successfully configured for playback.");
     }
+}
+
+#pragma mark - Export Composition
+
+RCT_EXPORT_METHOD(exportCompositionToFile:(NSArray<NSString *> *)segmentPaths
+                     outputPath:(NSString *)outputPath
+                       resolver:(RCTPromiseResolveBlock)resolve
+                       rejecter:(RCTPromiseRejectBlock)reject)
+{
+    if (segmentPaths.count == 0) {
+        reject(@"no_segments", @"Segment paths array is empty", nil);
+        return;
+    }
+    
+    // Build composition (reuse helper from createPlaybackItem)
+    AVMutableComposition *composition = [AVMutableComposition composition];
+    CMTime insertTime = kCMTimeZero;
+    for (NSString *path in segmentPaths) {
+        NSURL *url = [NSURL fileURLWithPath:path];
+        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+        if (!asset) continue;
+        CMTimeRange range = CMTimeRangeMake(kCMTimeZero, asset.duration);
+        NSError *err = nil;
+        AVMutableCompositionTrack *compTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
+        if (![compTrack insertTimeRange:range ofTrack:asset.tracks[0] atTime:insertTime error:&err]) {
+            reject(@"insert_failed", err.localizedDescription ?: @"Failed to insert track", err);
+            return;
+        }
+        insertTime = CMTimeAdd(insertTime, asset.duration);
+    }
+    
+    // Prepare export session
+    NSURL *outURL = [NSURL fileURLWithPath:outputPath];
+    // Remove existing file if any
+    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+    
+    AVAssetExportSession *exportSession = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetAppleM4A];
+    exportSession.outputURL = outURL;
+    exportSession.outputFileType = AVFileTypeAppleM4A;
+    
+    UIApplication *app = [UIApplication sharedApplication];
+    __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
+    bgTask = [app beginBackgroundTaskWithName:@"ExportComposition" expirationHandler:^{
+        [exportSession cancelExport];
+        [app endBackgroundTask:bgTask];
+        bgTask = UIBackgroundTaskInvalid;
+    }];
+    
+    [exportSession exportAsynchronouslyWithCompletionHandler:^{
+        [app endBackgroundTask:bgTask];
+        bgTask = UIBackgroundTaskInvalid;
+        switch (exportSession.status) {
+            case AVAssetExportSessionStatusCompleted:
+                resolve(outputPath);
+                break;
+            case AVAssetExportSessionStatusFailed:
+            case AVAssetExportSessionStatusCancelled:
+            default:
+                reject(@"export_failed", exportSession.error.localizedDescription ?: @"Export failed", exportSession.error);
+                break;
+        }
+    }];
 }
 
 @end
