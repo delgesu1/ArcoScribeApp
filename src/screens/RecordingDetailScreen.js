@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   SafeAreaView,
+  StatusBar,
   Platform,
   AppState,
   useWindowDimensions,
@@ -50,6 +51,30 @@ const RecordingDetailScreen = ({ route, navigation }) => {
   const appState = useRef(AppState.currentState);
   const isFocused = useIsFocused();
   const { width } = useWindowDimensions();
+
+  // Memoize RenderHtml props to prevent frequent re-renders
+  const htmlTagsStyles = useMemo(() => ({
+    p: { fontSize: 16, lineHeight: 24, marginBottom: 10, color: '#333333' },
+    h1: { fontSize: 22, fontWeight: 'bold', marginVertical: 10, color: '#000000' },
+    h2: { fontSize: 20, fontWeight: 'bold', marginVertical: 8, color: '#000000' },
+    h3: { fontSize: 18, fontWeight: 'bold', marginVertical: 6, color: '#000000' },
+    h4: { fontSize: 17, fontWeight: 'bold', marginVertical: 5, color: '#000000' },
+    li: { fontSize: 16, lineHeight: 24, marginBottom: 5, color: '#333333' },
+    ul: { paddingLeft: 20, marginBottom: 10 },
+    ol: { paddingLeft: 20, marginBottom: 10 },
+    a: { color: '#007AFF', textDecorationLine: 'underline' },
+    em: { fontStyle: 'italic' },
+    strong: { fontWeight: 'bold' },
+    code: { fontFamily: 'monospace', backgroundColor: '#f0f0f0', padding: 4, fontSize: 14 },
+    pre: { backgroundColor: '#f0f0f0', padding: 10, borderRadius: 4, overflow: 'hidden' }
+  }), []);
+
+  const processedHtmlSource = useMemo(() => {
+    if (!recording?.summary) return { html: '' };
+    return { 
+      html: md.render(recording.summary.replace(/```(\w*)\s*|```/g, '').trim()) 
+    };
+  }, [recording?.summary]);
 
   const loadRecording = useCallback(async () => {
     console.log(`Loading recording details for ID: ${recordingId}`);
@@ -344,8 +369,10 @@ const RecordingDetailScreen = ({ route, navigation }) => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" />
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.headerContainer}>
           <View style={styles.titleRow}>
             {isEditingTitle ? (
@@ -475,24 +502,8 @@ const RecordingDetailScreen = ({ route, navigation }) => {
               <View style={styles.summaryContainer}>
                 <RenderHtml 
                   contentWidth={width}
-                  source={{ 
-                    html: md.render(recording.summary?.replace(/```(\w*)\s*|```/g, '').trim() || '') 
-                  }}
-                  tagsStyles={{
-                    p: { fontSize: 16, lineHeight: 24, marginBottom: 10, color: '#333333' },
-                    h1: { fontSize: 22, fontWeight: 'bold', marginVertical: 10, color: '#000000' },
-                    h2: { fontSize: 20, fontWeight: 'bold', marginVertical: 8, color: '#000000' },
-                    h3: { fontSize: 18, fontWeight: 'bold', marginVertical: 6, color: '#000000' },
-                    h4: { fontSize: 17, fontWeight: 'bold', marginVertical: 5, color: '#000000' },
-                    li: { fontSize: 16, lineHeight: 24, marginBottom: 5, color: '#333333' },
-                    ul: { paddingLeft: 20, marginBottom: 10 },
-                    ol: { paddingLeft: 20, marginBottom: 10 },
-                    a: { color: '#007AFF', textDecorationLine: 'underline' },
-                    em: { fontStyle: 'italic' },
-                    strong: { fontWeight: 'bold' },
-                    code: { fontFamily: 'monospace', backgroundColor: '#f0f0f0', padding: 4, fontSize: 14 },
-                    pre: { backgroundColor: '#f0f0f0', padding: 10, borderRadius: 4, overflow: 'hidden' }
-                  }}
+                  source={processedHtmlSource}
+                  tagsStyles={htmlTagsStyles}
                   enableExperimentalMarginCollapsing={true}
                 />
               </View>
@@ -519,7 +530,8 @@ const RecordingDetailScreen = ({ route, navigation }) => {
           </View>
         )}
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 };
 
@@ -528,8 +540,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
+  safeArea: {
+    flex: 1,
+  },
   scrollContent: {
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
   },
   loadingContainer: {
     flex: 1,

@@ -684,7 +684,9 @@ const HomeScreen = ({ navigation }) => {
               <View style={styles.metadataContainer}>
                 <View style={styles.dateInfoContainer}>
                   <Text style={styles.recordingDate}>{item.date}</Text>
-                  <Text style={styles.recordingDuration}>{item.duration}</Text>
+                  <View style={styles.durationBubble}>
+                    <Text style={styles.recordingDuration}>{item.duration}</Text>
+                  </View>
                 </View>
                 <ActionIndicator
                   status={getProcessingStatus()}
@@ -703,9 +705,10 @@ const HomeScreen = ({ navigation }) => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      <View style={styles.searchContainer}>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.searchContainer}>
         <Icon name="search" size={20} color="#8E8E93" style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
@@ -763,6 +766,7 @@ const HomeScreen = ({ navigation }) => {
         )}
       </View>
     </SafeAreaView>
+    </View>
   );
 };
 
@@ -770,6 +774,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  safeArea: {
+    flex: 1,
   },
   searchContainer: {
     flexDirection: 'row',
@@ -789,7 +796,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     flexGrow: 1,
-    paddingBottom: 100,
+    paddingBottom: 30,
   },
   recordingItemContainer: {
     backgroundColor: '#FFFFFF',
@@ -846,10 +853,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  durationBubble: {
+    backgroundColor: '#F2F2F7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginLeft: 12,
+  },
   recordingDuration: {
     fontSize: 13,
     color: '#8E8E93',
-    marginLeft: 12,
     fontWeight: '500',
   },
   emptyContainer: {
@@ -939,29 +952,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  bottomActionContainer: {
+  editActionsWrapper: {
     position: 'absolute',
-    bottom: 0,
+    bottom: 30,
     left: 0,
     right: 0,
-    height: 90,
-    paddingBottom: 30,
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#BDBDBD',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  editActionsWrapper: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 20,
+    paddingHorizontal: 60,
   },
   editActionButton: {
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+    minWidth: 80,
   },
   editActionText: {
     fontSize: 12,

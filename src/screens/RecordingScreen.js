@@ -222,22 +222,23 @@ const RecordingScreen = ({ navigation }) => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      <TouchableOpacity 
-        style={styles.closeButton}
-        onPress={() => {
-          if (isRecording) {
-            handleStopRecording();
-          } else {
-            navigation.goBack();
-          }
-        }}
-      >
-        <Text style={styles.closeButtonText}>Done</Text>
-      </TouchableOpacity>
-      
-      <View style={styles.contentContainer}>
+      <SafeAreaView style={styles.safeArea}>
+        <TouchableOpacity 
+          style={styles.closeButton}
+          onPress={() => {
+            if (isRecording) {
+              handleStopRecording();
+            } else {
+              navigation.goBack();
+            }
+          }}
+        >
+          <Text style={styles.closeButtonText}>Done</Text>
+        </TouchableOpacity>
+        
+        <View style={styles.contentContainer}>
         <Text style={styles.timerText}>{formatTime(recordingTime)}</Text>
         
         {isRecording && currentSegment > 1 && (
@@ -274,8 +275,9 @@ const RecordingScreen = ({ navigation }) => {
             </TouchableOpacity>
           )}
         </View>
-      </View>
-    </SafeAreaView>
+        </View>
+      </SafeAreaView>
+    </View>
   );
 };
 
@@ -283,6 +285,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  safeArea: {
+    flex: 1,
   },
   closeButton: {
     padding: 16,
