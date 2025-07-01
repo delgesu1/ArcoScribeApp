@@ -10,11 +10,12 @@ import {
   StatusBar,
   ActivityIndicator,
   Alert,
-  Platform
+  Platform,
+  ActionSheetIOS
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { useIsFocused } from '@react-navigation/native';
-import { getRecordings, updateRecording, deleteRecording } from '../services/AudioRecordingService';
+import { getRecordings, updateRecording, deleteRecording, handleNotebookLMShareDetected, getRecordingById } from '../services/AudioRecordingService';
 import { transcribeRecording } from '../services/TranscriptionService';
 import { Swipeable } from 'react-native-gesture-handler';
 import { 
@@ -23,8 +24,11 @@ import {
   showFormatSelectionAndShare, 
   cleanSummaryMarkdown,
   generateHTMLFromMarkdown,
-  createPDFFromHTML
+  createPDFFromHTML,
+  shareBulkTranscriptsToNotebookLM,
+  shareTranscriptToNotebookLM
 } from '../utils/ShareUtils';
+import ActionIndicator from '../components/ActionIndicator';
 import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
 
@@ -217,11 +221,19 @@ const HomeScreen = ({ navigation }) => {
 
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity onPress={toggleEditMode} style={{ marginRight: 15 }}>
-          <Text style={{ color: '#007AFF', fontSize: 17 }}>
-            {isEditing ? 'Done' : 'Edit'} 
-          </Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity 
+            onPress={() => navigation.navigate('GoogleDriveSettings')} 
+            style={{ marginRight: 15 }}
+          >
+            <Icon name="settings-outline" size={22} color="#007AFF" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={toggleEditMode} style={{ marginRight: 15 }}>
+            <Text style={{ color: '#007AFF', fontSize: 17 }}>
+              {isEditing ? 'Done' : 'Edit'} 
+            </Text>
+          </TouchableOpacity>
+        </View>
       ),
     });
   }, [navigation, isEditing, toggleEditMode]); // Add toggleEditMode back
@@ -260,140 +272,329 @@ const HomeScreen = ({ navigation }) => {
     );
   };
 
-  // Handle bulk sharing
+  // Handle bulk sharing - mirrors individual recording share functionality
   const handleBulkShare = async () => {
     const idsToShare = Array.from(selectedRecordingIds);
     if (idsToShare.length === 0) return;
 
-    let validRecordings = [];
-    let invalidRecordings = [];
-
     try {
-      // Fetch full data and categorize recordings
-      const allRecordings = await getRecordings(); 
-      idsToShare.forEach(id => {
-        const recording = allRecordings.find(r => r.id === id);
-        if (recording && recording.processingStatus === 'complete' && recording.summary) {
-          validRecordings.push(recording);
-        } else if (recording) {
-          invalidRecordings.push(recording);
-        }
-      });
+      // Fetch full data for selected recordings
+      const allRecordings = await getRecordings();
+      const selectedRecordings = idsToShare.map(id => 
+        allRecordings.find(r => r.id === id)
+      ).filter(Boolean); // Remove any undefined recordings
 
-      // Check if any valid recordings were found
-      if (validRecordings.length === 0) {
-        let message = 'None of the selected recordings have a completed summary available to share.';
-        if (invalidRecordings.length > 0) {
-          message += '\n\nThe following recordings cannot be shared:\n' + invalidRecordings.map(r => `- ${r.title} (${r.processingStatus})`).join('\n');
-        }
-        return Alert.alert('Nothing to Share', message);
+      // Filter recordings that are complete
+      const completeRecordings = selectedRecordings.filter(r => 
+        r.processingStatus === 'complete'
+      );
+
+      if (completeRecordings.length === 0) {
+        return Alert.alert(
+          'Cannot Share', 
+          'None of the selected recordings have completed processing.'
+        );
       }
 
-      // Function to proceed with sharing the valid recordings
-      const proceedWithSharing = async (chosenFormat) => {
-        let filePaths = [];
-        let tempFilePaths = []; 
+      // Determine available options (similar to individual recording logic)
+      const hasTranscripts = completeRecordings.some(r => r.transcript);
+      const hasSummaries = completeRecordings.some(r => r.summary);
 
-        // Generate individual files (format is now passed in)
-        for (const recording of validRecordings) {
-          const cleanedSummary = cleanSummaryMarkdown(recording.summary);
-          const sanitizedTitle = recording.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      const options = [];
+      const callbacks = [];
 
-          if (chosenFormat === 'pdf') {
-            const htmlContent = generateHTMLFromMarkdown(recording.title, cleanedSummary);
-            console.log(`[HomeScreen] Generating PDF for: ${recording.title}`);
-            try {
-              const pdfPath = await createPDFFromHTML(recording.title, htmlContent);
-              console.log(`[HomeScreen] PDF generated at path: ${pdfPath}`);
-              const pdfExists = await RNFS.exists(pdfPath);
-              console.log(`[HomeScreen] PDF file exists at path? ${pdfExists ? 'YES' : 'NO'}`);
-              if (pdfExists) {
-                filePaths.push(Platform.OS === 'ios' ? pdfPath : `file://${pdfPath}`);
-              } else {
-                console.warn(`[HomeScreen] PDF file generation reported success but file not found at: ${pdfPath}`);
-              }
-            } catch (pdfError) {
-                console.error(`[HomeScreen] Error generating PDF for ${recording.title}:`, pdfError);
-                // Optionally alert the user or skip this file
-            }
-          } else { // md
-            const filename = `${sanitizedTitle}_summary.md`;
-            const mdPath = `${RNFS.CachesDirectoryPath}/${filename}`;
-            console.log(`[HomeScreen] Generating MD for: ${recording.title} at path: ${mdPath}`);
-            try {
-              await RNFS.writeFile(mdPath, cleanedSummary, 'utf8');
-              const urlPath = Platform.OS === 'ios' ? `file://${mdPath}` : mdPath;
-              filePaths.push(urlPath);
-              tempFilePaths.push(mdPath); // Add to list for cleanup
-            } catch (mdError) {
-              console.error(`[HomeScreen] Error generating MD for ${recording.title}:`, mdError);
-              // Optionally alert the user or skip this file
+      if (hasTranscripts) {
+        options.push('Share Transcripts');
+        callbacks.push(() => handleBulkTranscriptShare(completeRecordings));
+      }
+
+      if (hasSummaries) {
+        options.push('Share Summaries');
+        callbacks.push(() => handleBulkSummaryShare(completeRecordings));
+      }
+
+      if (options.length === 0) {
+        return Alert.alert(
+          'Cannot Share', 
+          'None of the selected recordings have content to share.'
+        );
+      }
+
+      if (options.length === 1) {
+        // Only one option available, execute directly
+        callbacks[0]();
+        return;
+      }
+
+      // Multiple options available, show ActionSheet (like individual recording)
+      options.push('Cancel');
+      
+      if (Platform.OS === 'ios') {
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            options,
+            cancelButtonIndex: options.length - 1,
+            title: 'What would you like to share?'
+          },
+          (buttonIndex) => {
+            if (buttonIndex < callbacks.length) {
+              callbacks[buttonIndex]();
             }
           }
-        }
-
-        if (filePaths.length === 0) {
-          // Show alert only if generation failed for ALL, otherwise proceed with successful ones
-          return Alert.alert('Error', 'Failed to generate files for sharing.');
-        }
-
-        // Use Share.open for multiple files
-        const shareOptions = {
-          title: validRecordings.length > 1 ? 'Share Summaries' : `Share ${validRecordings[0].title} Summary`,
-          urls: filePaths,
-          type: chosenFormat === 'pdf' ? 'application/pdf' : 'text/markdown',
-          subject: validRecordings.length > 1 ? 'Lesson Summaries' : `${validRecordings[0].title} Summary`, // For email
-        };
-
-        await Share.open(shareOptions);
-        
-        // Clean up temporary MD files
-        if (tempFilePaths.length > 0) {
-          setTimeout(() => { 
-            tempFilePaths.forEach(p => RNFS.unlink(p).catch(err => console.error('MD cleanup failed:', err)));
-          }, 5000); 
-        }
-
-      };
-
-      // Define the format selection logic separately
-      const selectFormatAndShare = async () => {
-        const chosenFormat = await new Promise((resolve) => {
-          Alert.alert(
-            'Choose Format',
-            `Share summaries for ${validRecordings.length} recording${validRecordings.length > 1 ? 's' : ''}?`,
-            [
-              { text: 'Markdown (.md)', onPress: () => resolve('md') },
-              { text: 'PDF (.pdf)', onPress: () => resolve('pdf') },
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) }
-            ]
-          );
-        });
-
-        if (chosenFormat) {
-          await proceedWithSharing(chosenFormat); // Pass format to the processing function
-        }
-      };
-
-      // If there were invalid items, confirm before proceeding
-      if (invalidRecordings.length > 0) {
-        const invalidTitles = invalidRecordings.map(r => `- ${r.title} (${r.processingStatus})`).join('\n');
-        Alert.alert(
-          'Some Recordings Cannot Be Shared',
-          `The following recordings do not have a completed summary:\n${invalidTitles}\n\nDo you want to share the ${validRecordings.length} valid recording${validRecordings.length > 1 ? 's' : ''}?`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Share Valid', onPress: selectFormatAndShare } // Ask for format after confirmation
-          ]
         );
       } else {
-        // All selected were valid, ask for format and proceed
-        await selectFormatAndShare();
+        // For Android, use Alert with buttons
+        const buttons = callbacks.map((callback, index) => ({
+          text: options[index],
+          onPress: callback
+        }));
+        buttons.push({ text: 'Cancel', style: 'cancel' });
+        
+        Alert.alert('What would you like to share?', '', buttons);
       }
 
     } catch (error) {
       console.error('Failed to prepare bulk share:', error);
-      Alert.alert('Error', 'Could not prepare summaries for sharing.');
+      Alert.alert('Error', 'Could not prepare recordings for sharing.');
+    }
+  };
+
+  // Handle bulk transcript sharing (new functionality)
+  const handleBulkTranscriptShare = async (recordings) => {
+    const transcriptRecordings = recordings.filter(r => r.transcript);
+    
+    if (transcriptRecordings.length === 0) {
+      return Alert.alert('No Transcripts', 'None of the selected recordings have transcripts to share.');
+    }
+
+    if (transcriptRecordings.length === 1) {
+      // Single transcript - use individual sharing
+      try {
+        const result = await shareTranscriptToNotebookLM(
+          transcriptRecordings[0],
+          async (recordingId) => {
+            await handleNotebookLMShareDetected(recordingId);
+            await loadRecordings(true);
+          }
+        );
+
+        if (result.notebookLMDetected) {
+          Alert.alert(
+            'NotebookLM Detected!',
+            'Your transcript has been shared to NotebookLM. Google Drive files will be automatically renamed with [NLM] prefix.',
+            [{ text: 'OK' }]
+          );
+        } else if (result.shared) {
+          Alert.alert(
+            'Transcript Shared',
+            'Your transcript has been shared. If you shared it to NotebookLM, the app will automatically detect it and update the status.',
+            [{ text: 'OK' }]
+          );
+        }
+      } catch (error) {
+        console.error('Error sharing transcript:', error);
+        Alert.alert('Error', 'Failed to share transcript');
+      }
+      return;
+    }
+
+    // Multiple transcripts - give user choice
+    Alert.alert(
+      'Share Multiple Transcripts',
+      `You're sharing ${transcriptRecordings.length} transcripts.\n\n⚠️ NotebookLM iOS app CANNOT import multiple files at once - only the first will be imported.\n\nFor NotebookLM: Choose "Share One by One" and they'll queue automatically. When you return to ArcoScribe, the next transcript will share automatically.\n\nFor other apps (AirDrop, email, etc.): "Share All Together" works normally.`,
+      [
+        {
+          text: 'Share All Together (AirDrop/Email)',
+          onPress: () => handleBulkShareTogether(transcriptRecordings)
+        },
+        {
+          text: 'Share One by One (NotebookLM)', 
+          onPress: () => handleSequentialShare(transcriptRecordings)
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        }
+      ]
+    );
+  };
+
+  // Share all transcripts at once (original behavior)
+  const handleBulkShareTogether = async (recordings) => {
+    try {
+      const result = await shareBulkTranscriptsToNotebookLM(
+        recordings,
+        async (recordingId) => {
+          await handleNotebookLMShareDetected(recordingId);
+          await loadRecordings(true);
+        }
+      );
+
+      if (result.notebookLMDetected) {
+        Alert.alert(
+          'NotebookLM Detected!',
+          `${result.processedCount} transcript${result.processedCount > 1 ? 's have' : ' has'} been shared to NotebookLM. Note: NotebookLM may have combined them into one document.`,
+          [{ text: 'OK' }]
+        );
+      } else if (result.shared) {
+        Alert.alert(
+          'Transcripts Shared',
+          `${result.processedCount} transcript${result.processedCount > 1 ? 's have' : ' has'} been shared.`,
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Error sharing bulk transcripts:', error);
+      Alert.alert('Error', 'Failed to share transcripts');
+    }
+  };
+
+  // Share transcripts one by one
+  const handleSequentialShare = async (recordings) => {
+    try {
+      let successCount = 0;
+      let notebookLMDetectedCount = 0;
+
+      for (let i = 0; i < recordings.length; i++) {
+        const recording = recordings[i];
+        
+        // Show progress
+        console.log(`[HomeScreen] Sharing transcript ${i + 1} of ${recordings.length}: ${recording.title}`);
+        
+        const result = await shareTranscriptToNotebookLM(
+          recording,
+          async (recordingId) => {
+            await handleNotebookLMShareDetected(recordingId);
+          }
+        );
+
+        if (result.shared) {
+          successCount++;
+        }
+        if (result.notebookLMDetected) {
+          notebookLMDetectedCount++;
+        }
+
+        // Small delay between shares to help iOS process them separately
+        if (i < recordings.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+      }
+
+      // Reload recordings to show updated status
+      await loadRecordings(true);
+
+      // Show final result
+      if (notebookLMDetectedCount > 0) {
+        Alert.alert(
+          'Sequential Sharing Complete!',
+          `${successCount} transcript${successCount > 1 ? 's' : ''} shared successfully. ${notebookLMDetectedCount} detected as shared to NotebookLM. Each should appear as a separate source in NotebookLM.`,
+          [{ text: 'OK' }]
+        );
+      } else if (successCount > 0) {
+        Alert.alert(
+          'Transcripts Shared',
+          `${successCount} transcript${successCount > 1 ? 's' : ''} shared successfully.`,
+          [{ text: 'OK' }]
+        );
+      }
+
+    } catch (error) {
+      console.error('Error in sequential sharing:', error);
+      Alert.alert('Error', 'Failed to complete sequential sharing');
+    }
+  };
+
+  // Handle bulk summary sharing (existing functionality, but refactored)
+  const handleBulkSummaryShare = async (recordings) => {
+    // Filter recordings that have summaries
+    const validRecordings = recordings.filter(r => r.summary);
+
+    if (validRecordings.length === 0) {
+      return Alert.alert(
+        'No Summaries', 
+        'None of the selected recordings have summaries to share.'
+      );
+    }
+
+    // Function to proceed with sharing the valid recordings
+    const proceedWithSharing = async (chosenFormat) => {
+      let filePaths = [];
+      let tempFilePaths = [];
+
+      // Generate individual files
+      for (const recording of validRecordings) {
+        const cleanedSummary = cleanSummaryMarkdown(recording.summary);
+        const sanitizedTitle = recording.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+        if (chosenFormat === 'pdf') {
+          const htmlContent = generateHTMLFromMarkdown(recording.title, cleanedSummary);
+          console.log(`[HomeScreen] Generating PDF for: ${recording.title}`);
+          try {
+            const pdfPath = await createPDFFromHTML(recording.title, htmlContent);
+            console.log(`[HomeScreen] PDF generated at path: ${pdfPath}`);
+            const pdfExists = await RNFS.exists(pdfPath);
+            console.log(`[HomeScreen] PDF file exists at path? ${pdfExists ? 'YES' : 'NO'}`);
+            if (pdfExists) {
+              filePaths.push(Platform.OS === 'ios' ? pdfPath : `file://${pdfPath}`);
+            } else {
+              console.warn(`[HomeScreen] PDF file generation reported success but file not found at: ${pdfPath}`);
+            }
+          } catch (pdfError) {
+            console.error(`[HomeScreen] Error generating PDF for ${recording.title}:`, pdfError);
+          }
+        } else { // md
+          const filename = `${sanitizedTitle}_summary.md`;
+          const mdPath = `${RNFS.CachesDirectoryPath}/${filename}`;
+          console.log(`[HomeScreen] Generating MD for: ${recording.title} at path: ${mdPath}`);
+          try {
+            await RNFS.writeFile(mdPath, cleanedSummary, 'utf8');
+            const urlPath = Platform.OS === 'ios' ? `file://${mdPath}` : mdPath;
+            filePaths.push(urlPath);
+            tempFilePaths.push(mdPath);
+          } catch (mdError) {
+            console.error(`[HomeScreen] Error generating MD for ${recording.title}:`, mdError);
+          }
+        }
+      }
+
+      if (filePaths.length === 0) {
+        return Alert.alert('Error', 'Failed to generate files for sharing.');
+      }
+
+      // Use Share.open for multiple files
+      const shareOptions = {
+        title: validRecordings.length > 1 ? 'Share Summaries' : `Share ${validRecordings[0].title} Summary`,
+        urls: filePaths,
+        type: chosenFormat === 'pdf' ? 'application/pdf' : 'text/markdown',
+        subject: validRecordings.length > 1 ? 'Lesson Summaries' : `${validRecordings[0].title} Summary`,
+      };
+
+      await Share.open(shareOptions);
+
+      // Clean up temporary MD files
+      if (tempFilePaths.length > 0) {
+        setTimeout(() => {
+          tempFilePaths.forEach(p => RNFS.unlink(p).catch(err => console.error('MD cleanup failed:', err)));
+        }, 5000);
+      }
+    };
+
+    // Show format selection dialog (same as existing logic)
+    const chosenFormat = await new Promise((resolve) => {
+      Alert.alert(
+        'Choose Format',
+        `Share summaries for ${validRecordings.length} recording${validRecordings.length > 1 ? 's' : ''}?`,
+        [
+          { text: 'Markdown (.md)', onPress: () => resolve('md') },
+          { text: 'PDF (.pdf)', onPress: () => resolve('pdf') },
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) }
+        ]
+      );
+    });
+
+    if (chosenFormat) {
+      await proceedWithSharing(chosenFormat);
     }
   };
 
@@ -414,29 +615,14 @@ const HomeScreen = ({ navigation }) => {
     const isCurrentlyProcessing = processingId === item.id;
     const isSelected = selectedRecordingIds.has(item.id);
 
-    const statusIcon = () => {
-      if (isCurrentlyProcessing) {
-        return <ActivityIndicator size="small" color="#FF9500" />;
-      }
-      if (item.processingStatus === 'complete') {
-        return (
-          <View style={styles.statusBadge}>
-            <Icon name="checkmark" size={12} color="#FFFFFF" />
-          </View>
-        );
-      } else if (item.processingStatus === 'processing') {
-        return <Icon name="hourglass-outline" size={18} color="#FF9500" />;
-      } else if (item.processingStatus === 'error') {
-        return (
-          <View style={[styles.statusBadge, styles.errorBadge]}>
-            <Icon name="alert" size={12} color="#FFFFFF" />
-          </View>
-        );
-      }
-      return null;
-    };
 
-    const showProcessButton = item.processingStatus !== 'complete' && !isCurrentlyProcessing;
+
+    const getProcessingStatus = () => {
+      if (isCurrentlyProcessing || item.processingStatus === 'processing') {
+        return 'processing';
+      }
+      return item.processingStatus || 'pending';
+    };
 
     // Render the swipe actions (right swipe)
     const renderRightActions = (progress, dragX) => {
@@ -495,36 +681,20 @@ const HomeScreen = ({ navigation }) => {
             )}
             <View style={styles.recordingInfo}>
               <Text style={styles.recordingTitle} numberOfLines={1} ellipsizeMode="tail">{item.title}</Text>
-              <View style={styles.dateStatusContainer}>
-                <Text style={styles.recordingDate}>{item.date}</Text>
-                {statusIcon()}
-              </View>
-            </View>
-            
-            <View style={styles.actionsContainer}>
-              {isCurrentlyProcessing ? (
-                <View style={styles.processingIndicator}>
-                  <ActivityIndicator size="small" color="#FF9500" />
+              <View style={styles.metadataContainer}>
+                <View style={styles.dateInfoContainer}>
+                  <Text style={styles.recordingDate}>{item.date}</Text>
+                  <Text style={styles.recordingDuration}>{item.duration}</Text>
                 </View>
-              ) : showProcessButton ? (
-                <TouchableOpacity 
-                  style={[
-                    styles.iconButton,
-                    processingId && styles.disabledIconButton
-                  ]}
-                  onPress={() => handleStartProcessing(item)}
-                  disabled={!!processingId}
-                >
-                  <Icon 
-                    name="chatbubbles-outline" 
-                    size={18} 
-                    color={processingId ? "#BDBDBD" : "#FFFFFF"}
-                  />
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.buttonPlaceholder} />
-              )}
-              <Text style={styles.recordingDuration}>{item.duration}</Text>
+                <ActionIndicator
+                  status={getProcessingStatus()}
+                  notebookLMStatus={item.notebookLMStatus}
+                  onTranscribe={() => handleStartProcessing(item)}
+                  onShare={() => handleShareRecording(item.id)}
+                  onRetry={() => handleStartProcessing(item)}
+                  disabled={!!processingId && processingId !== item.id}
+                />
+              </View>
             </View>
           </TouchableOpacity>
         </View>
@@ -637,8 +807,9 @@ const styles = StyleSheet.create({
   recordingItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 20,
     paddingHorizontal: 16,
+    minHeight: 80,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#E0E0E0',
   },
@@ -658,24 +829,28 @@ const styles = StyleSheet.create({
   },
   recordingInfo: {
     flex: 1,
-    marginLeft: 8,
+    marginLeft: 12,
   },
   recordingTitle: {
     fontSize: 17,
-    fontWeight: '500',
-    marginBottom: 4,
-    marginTop: 4,
+    fontWeight: '600',
+    marginBottom: 6,
+    marginTop: 2,
+    color: '#1C1C1E',
+    letterSpacing: -0.2,
   },
   recordingDate: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
+    fontWeight: '400',
     flexDirection: 'row',
     alignItems: 'center',
   },
   recordingDuration: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
-    marginLeft: 8,
+    marginLeft: 12,
+    fontWeight: '500',
   },
   emptyContainer: {
     flex: 1,
@@ -709,42 +884,16 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
-  statusBadge: {
-    backgroundColor: '#007AFF',
-    borderRadius: 10,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-  },
-  errorBadge: {
-    backgroundColor: '#FF3B30',
-  },
-  dateStatusContainer: {
+  metadataContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    flex: 1,
   },
-  actionsContainer: {
+  dateInfoContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  iconButton: {
-    backgroundColor: '#007AFF',
-    borderRadius: 15,
-    padding: 0,
-    width: 30,
-    height: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 4,
-  },
-  disabledIconButton: {
-    backgroundColor: '#BDBDBD',
-  },
-  processingIndicator: {
-    width: 30,
-    height: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 4,
+    flex: 1,
   },
   rightActions: {
     flexDirection: 'row',
@@ -768,11 +917,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     marginTop: 4,
-  },
-  buttonPlaceholder: {
-    width: 30,
-    height: 30,
-    marginRight: 4,
   },
   selectionCircleOuter: {
     width: 40,
